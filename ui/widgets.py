@@ -282,44 +282,112 @@ class ScrollingTextLabel(QLabel):
 class SmoothProgressBar(QProgressBar):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setTextVisible(False); self.setFixedHeight(40); self.setStyleSheet("QProgressBar { border: none; background: transparent; }")
-        self.setRange(0, 100); self.setValue(0); self._current_val = 0.0; self._target_val = 0.0; self._bar_color = QColor(255, 255, 255, 200)
-        self.opacity_effect = QGraphicsOpacityEffect(self); self.setGraphicsEffect(self.opacity_effect); self.opacity_effect.setOpacity(0.0)
-        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity"); self.anim.setDuration(500); self.anim.setEasingCurve(QEasingCurve.InOutQuad); self.hide()
+        self.setTextVisible(False)
+        self.setFixedHeight(40)
+        self.setStyleSheet("QProgressBar { border: none; background: transparent; }")
+        self.setRange(0, 100)
+        self.setValue(0)
+        self._current_val = 0.0
+        self._target_val = 0.0
+        self._bar_color = QColor(255, 255, 255, 200)
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(0.0)
+        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim.setDuration(500)
+        self.anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self.hide()
+
     def setTargetValue(self, val, snap=False):
         self._target_val = float(val)
-        if snap or abs(self._target_val - self._current_val) > 3000: self._current_val = self._target_val
+        if snap or abs(self._target_val - self._current_val) > 3000:
+            self._current_val = self._target_val
         self.update()
+
     def update_smooth_value(self):
         diff = self._target_val - self._current_val
-        if abs(diff) < 0.5: self._current_val = self._target_val
-        else: self._current_val += diff * 0.1
+        if abs(diff) < 0.5:
+            self._current_val = self._target_val
+        else:
+            self._current_val += diff * 0.1
         self.update()
+
     def paintEvent(self, event):
         if self.window().isMinimized(): return
-        painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
-        widget_rect = self.rect(); bar_height = 4; border_width = 1 if getattr(self.window(), '_current_text_border_enabled', False) else 0
-        y_offset = widget_rect.height() - bar_height; rect = QRectF(0, y_offset, widget_rect.width(), bar_height)
-        bg_color = QColor(self._bar_color); bg_color.setAlpha(50); painter.setBrush(QBrush(bg_color)); painter.setPen(Qt.NoPen); painter.drawRoundedRect(rect, 2, 2)
-        if border_width > 0:
-            pen = QPen(QColor(*getattr(self.window(), '_current_text_border_color', [0,0,0]))); pen.setWidth(border_width); painter.setPen(pen); painter.setBrush(Qt.NoBrush)
-            border_rect = QRectF(0, y_offset, widget_rect.width(), bar_height); painter.drawRoundedRect(border_rect, 2, 2)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Retrieve styles dynamically from the main window
+        border_enabled = getattr(self.window(), '_current_text_border_enabled', False)
+        # Use the specific text border size setting, defaulting to 3 if not set
+        border_width = getattr(self.window(), '_current_text_border_size', 3) if border_enabled else 0
+        border_color_list = getattr(self.window(), '_current_text_border_color', [0,0,0])
+        border_color = QColor(*border_color_list)
+
+        widget_rect = self.rect()
+        
+        # Define visual properties
+        fill_height = 6 # Slightly thicker to look distinct
+        total_height = fill_height + border_width
+        
+        # Calculate Y offset to align to bottom, accounting for border
+        y_offset = widget_rect.height() - total_height - 2 # 2px padding from bottom
+        
+        # QPen draws centered on the path, so we inset by half the border width 
+        # to ensure the stroke stays within our intended visual bounds.
+        inset = border_width / 2.0
+        draw_rect = QRectF(
+            inset, 
+            y_offset + inset, 
+            widget_rect.width() - border_width, 
+            fill_height
+        )
+
+        bg_color = QColor(self._bar_color)
+        bg_color.setAlpha(50)
+
+        # Draw Background Fill
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(draw_rect, 2, 2)
+
+        # Draw Progress Fill
         if self.maximum() > 0:
-            ratio = self._current_val / self.maximum(); ratio = max(0.0, min(1.0, ratio))
-            bar_width = rect.width() * ratio; bar_y_offset = y_offset + border_width; bar_height_offset = bar_height - (border_width * 2)
-            if bar_width > 0: bar_rect = QRectF(0, bar_y_offset, bar_width, bar_height_offset); painter.setBrush(QBrush(self._bar_color)); painter.drawRoundedRect(bar_rect, 2, 2)
+            ratio = self._current_val / self.maximum()
+            ratio = max(0.0, min(1.0, ratio))
+            
+            progress_width = draw_rect.width() * ratio
+            
+            if progress_width > 0:
+                progress_rect = QRectF(draw_rect.x(), draw_rect.y(), progress_width, draw_rect.height())
+                painter.setBrush(QBrush(self._bar_color))
+                painter.drawRoundedRect(progress_rect, 2, 2)
+
+        # Draw Border (Outline) on top
+        # This ensures the border crisply outlines the bar without the fill overlapping it
+        if border_width > 0:
+            pen = QPen(border_color)
+            pen.setWidth(border_width)
+            pen.setJoinStyle(Qt.RoundJoin) 
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(draw_rect, 2, 2)
+
     def fade_in(self):
         if self.isVisible() and self.opacity_effect.opacity() == 1.0: return
         self.show(); self.anim.stop()
         try: self.anim.finished.disconnect(self.hide)
         except TypeError: pass
         self.anim.setStartValue(self.opacity_effect.opacity()); self.anim.setEndValue(1.0); self.anim.start()
+
     def fade_out(self):
         if not self.isVisible() or self.opacity_effect.opacity() == 0.0: return
         self.anim.stop()
         try: self.anim.finished.disconnect(self.hide)
         except TypeError: pass
         self.anim.setStartValue(self.opacity_effect.opacity()); self.anim.setEndValue(0.0); self.anim.finished.connect(self.hide); self.anim.start()
+
     def set_color(self, color):
         if isinstance(color, (tuple, list)): self._bar_color = QColor(*color)
         else: self._bar_color = QColor(color)

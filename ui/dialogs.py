@@ -2408,7 +2408,7 @@ class ColorEditorDialog(QDialog):
         self.govee_device_table.resizeColumnsToContents()
 
     def save_and_close(self, quick=False):
-        # 1. Collect all changes
+        # 1. Collect all changes from UI controls
         global_changes = self._get_global_changes()
         theme_changes = []
         if self.media_source == 'spotify':
@@ -2416,11 +2416,13 @@ class ColorEditorDialog(QDialog):
         
         all_changes = global_changes + theme_changes
         
-        # 2. Determine what to save
+        # 2. Determine exactly which keys to save
         keys_to_save = []
         if quick:
+            # Quick Save: Automatically select all items that have changed
             keys_to_save = [item['key'] for item in all_changes if item['changed']]
         else:
+            # Standard Save: Prompt user if there are changes
             if not all_changes:
                 self.accept()
                 return
@@ -2429,9 +2431,9 @@ class ColorEditorDialog(QDialog):
             if dialog.exec_() == QDialog.Accepted:
                 keys_to_save = dialog.selected_keys
             else:
-                return # Cancelled
+                return # Cancelled by user, keep dialog open
 
-        # 3. Save Global Settings
+        # 3. Save Global Settings to Registry/Config
         settings = QSettings("SpotifySync", "App")
         for item in global_changes:
             if item['key'] in keys_to_save:
@@ -2441,35 +2443,41 @@ class ColorEditorDialog(QDialog):
                 else:
                     settings.setValue(item['key'], val)
 
-        # 4. Save Theme Settings
+        # 4. Save Theme Settings to Cache
         if self.media_source == 'spotify':
-            # Start with existing cache to preserve unchanged settings
+            # Start with existing cache to preserve settings we aren't touching
             album_config = self.cached_data.copy()
+            theme_keys_processed = False
+            
             for item in theme_changes:
                 if item['key'] in keys_to_save:
+                    theme_keys_processed = True
+                    # If value is the special remove marker, delete from cache (reverting to auto)
                     if item['value'] == "__REMOVE__":
                         album_config.pop(item['key'], None)
                     else:
                         album_config[item['key']] = item['value']
             
-            # Only update cache if we have changes or if we are potentially removing keys
-            if theme_changes:
+            # Apply updates to cache
+            if theme_keys_processed:
                 self.color_cache.set_album_data(self.album_id, album_config)
                 
-                # Update blob density in parent if changed
+                # Update parent window blob density immediately
                 slider_value = self.blob_amount_slider.value()
-                self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
+                if self.parent():
+                    self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
 
-            # Custom Art Logic (Implicitly saved if confirmed)
-            track_config = self.color_cache.get_album_data(self.track_id) or {}
-            if self.custom_art_b64: track_config["custom_art_b64"] = self.custom_art_b64
-            else: track_config.pop("custom_art_b64", None)
-            self.color_cache.set_album_data(self.track_id, track_config if track_config else None)
+            # Handle Custom Art persistence
+            if self.custom_art_b64:
+                track_config = self.color_cache.get_album_data(self.track_id) or {}
+                track_config["custom_art_b64"] = self.custom_art_b64
+                self.color_cache.set_album_data(self.track_id, track_config)
 
-        if all_changes:
+        # 5. Notify Main Window to Refresh
+        if keys_to_save or quick:
             self.config_saved.emit(self.album_id, self.color_cache.get_album_data(self.album_id) or {})
 
-        # --- Check for credential changes ---
+        # 6. Check for Credential Changes (Requires Restart)
         new_spotify_id = self.spotify_id_input.text().strip()
         new_spotify_secret = self.spotify_secret_input.text().strip()
         new_govee_key = self.govee_key_input.text().strip()
@@ -2477,21 +2485,25 @@ class ColorEditorDialog(QDialog):
         new_govee_devices = []
         for row in range(self.govee_device_table.rowCount()):
             if self.govee_device_table.item(row, 0).checkState() == Qt.Checked:
-                new_govee_devices.append({"device": self.govee_device_table.item(row, 1).text(), "model": self.govee_device_table.item(row, 2).text(), "name": self.govee_device_table.item(row, 3).text()})
+                new_govee_devices.append({
+                    "device": self.govee_device_table.item(row, 1).text(), 
+                    "model": self.govee_device_table.item(row, 2).text(), 
+                    "name": self.govee_device_table.item(row, 3).text()
+                })
         
         new_govee_devices_json = json.dumps(sorted(new_govee_devices, key=lambda x: x['device']))
         initial_govee_devices_json = json.dumps(sorted(self.initial_govee_devices, key=lambda x: x['device']))
 
-        credentials_changed = (new_spotify_id != self.initial_spotify_id or new_spotify_secret != self.initial_spotify_secret or new_govee_key != self.initial_govee_key or new_govee_devices_json != initial_govee_devices_json)
+        credentials_changed = (new_spotify_id != self.initial_spotify_id or 
+                               new_spotify_secret != self.initial_spotify_secret or 
+                               new_govee_key != self.initial_govee_key or 
+                               new_govee_devices_json != initial_govee_devices_json)
 
-        # --- Handle saving based on changes ---
         if credentials_changed:
             msg = ThemedMessageBox("Restart Required", "Changing credentials requires an application restart. Save all changes and restart now?", 
                                    [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value())
             
             if msg.exec_() == QDialog.Accepted:
-                # User confirmed, now save everything and restart
-
                 settings.setValue("spotify_client_id", new_spotify_id.strip())
                 settings.setValue("spotify_client_secret", new_spotify_secret.strip())
                 settings.setValue("govee_api_key", new_govee_key.strip())
@@ -2499,10 +2511,11 @@ class ColorEditorDialog(QDialog):
                 
                 if os.path.exists(".cache"): os.remove(".cache")
                 self.parent().restart_app()
-            # If user says No, do nothing and leave the dialog open.
+            else:
+                # User chose not to restart, but we still close the dialog as requested
+                self.accept()
         else:
-            # No credential changes, just accept and close.
-            # The parent window will see the saved settings on next load.
+            # No credential changes, just close
             self.accept()
 
     def find_govee_devices(self):

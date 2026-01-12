@@ -53,7 +53,8 @@ class BlobManager:
         calculated_count = int(area / self.density)
         target_count = max(min_blobs, min(max_blobs, calculated_count))
         while len(self.blobs) < target_count:
-            color = self.palette[len(self.blobs) % len(self.palette)]
+            if not self.palette: break
+            color = self.palette[len(self.blobs) % len(self.palette)]; 
             Blob(self, color, start_delay=random.randint(0, 2000))
         while len(self.blobs) > target_count:
             if self.blobs:

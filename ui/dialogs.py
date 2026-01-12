@@ -28,8 +28,8 @@ class ThemedDialog(QDialog):
         self.setObjectName("ThemedDialog"); self.setAttribute(Qt.WA_TranslucentBackground)
         self.bg_color = bg_color or QColor(30, 30, 30); self.text_color = text_color or QColor(255, 255, 255)
         self.accent_color = accent_color or QColor(100, 100, 100); self.border_enabled = border_enabled
-        self.border_color = border_color or QColor("black"); self.border_width = border_width
-        self.drag_pos = None; self._main_layout = QVBoxLayout(self); self._main_layout.setContentsMargins(0, 0, 0, 0); self._main_layout.setSpacing(0)
+        self.border_color = border_color or QColor("black"); self.border_width = border_width; self.drag_pos = None
+        self._main_layout = QVBoxLayout(self); self._main_layout.setContentsMargins(0, 0, 0, 0); self._main_layout.setSpacing(0)
 
         self.title_bar = QWidget(); self.title_bar.setFixedHeight(40); title_layout = QHBoxLayout(self.title_bar); title_layout.setContentsMargins(15, 0, 10, 0)
         self.title_label = BorderedLabel(title); self.title_label.setBorder(self.border_enabled, self.border_color, self.border_width)
@@ -38,7 +38,6 @@ class ThemedDialog(QDialog):
         self.close_btn.setStyleSheet(f"QPushButton {{ border: none; background: transparent; font-size: 20px; color: {self.text_color.name()}; }} QPushButton:hover {{ color: #ff5555; background: transparent; border: none; }}")
         title_layout.addWidget(self.title_label); title_layout.addStretch(); title_layout.addWidget(self.close_btn)
         self._main_layout.addWidget(self.title_bar); self.content_widget = QWidget(); self.content_layout = QVBoxLayout(self.content_widget); self.content_layout.setContentsMargins(20, 10, 20, 20); self._main_layout.addWidget(self.content_widget)
-
         self.apply_theme()
     def apply_theme(self): self.setStyleSheet(get_common_stylesheet(self.bg_color, self.text_color, self.accent_color)); self.update()
     def paintEvent(self, event):
@@ -57,7 +56,8 @@ class ThemedMessageBox(ThemedDialog):
     def __init__(self, title, message, buttons=None, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
         super().__init__(parent, title, bg_color, text_color, accent_color, border_enabled, border_color, border_width)
         msg_label = BorderedLabel(message); msg_label.setBorder(border_enabled, self.border_color, border_width); msg_label.setCustomTextColor(self.text_color); msg_label.setWordWrap(True); self.content_layout.addWidget(msg_label)
-        btn_layout = QHBoxLayout(); btn_layout.addStretch()
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
         if not buttons: buttons = [("OK", QDialog.Accepted)]
         for btn_text, role in buttons:
             btn = QPushButton(btn_text); btn.clicked.connect(lambda checked, r=role: self.finish(r)); btn_layout.addWidget(btn)
@@ -65,14 +65,15 @@ class ThemedMessageBox(ThemedDialog):
     def finish(self, result): self.done(result)
 
 # ... [Include SaveConfirmationDialog, FramelessColorDialog, FramelessFileDialog here] ...
+
 class SpotifySetupDialog(ThemedDialog):
     def __init__(self, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
         super().__init__(parent, "Spotify API Setup", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
-        layout = QVBoxLayout(); layout.setContentsMargins(20, 20, 20, 20)
-        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
         id_label = QLabel("Client ID:"); secret_label = QLabel("Client Secret:")
         self.id_input = QLineEdit(); self.secret_input = QLineEdit()
-        self.id_input.setEchoMode(QLineEdit.Password); self.secret_input.setEchoMode(QLineEdit.Password)
+        self.id_input.setEchoMode(QLineEdit.Password);self.secret_input.setEchoMode(QLineEdit.Password)
         
         # Load existing credentials
         settings = QSettings("SpotifySync", "App")
@@ -80,12 +81,12 @@ class SpotifySetupDialog(ThemedDialog):
         self.secret_input.setText(settings.value("spotify_client_secret", ""))
         
         form_layout = QFormLayout(); form_layout.addRow(id_label, self.id_input); form_layout.addRow(secret_label, self.secret_input)
-        layout.addLayout(form_layout)
+        layout.addLayout(form_layout);
         
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("Save"); save_btn.setDefault(True); save_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
-        btn_layout.addStretch(); btn_layout.addWidget(cancel_btn); btn_layout.addWidget(save_btn)
+        btn_layout.addStretch();btn_layout.addWidget(cancel_btn);btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
         self.content_layout.addLayout(layout)
 
@@ -104,13 +105,13 @@ class SaveConfirmationDialog(ThemedDialog):
         self.settings_list = settings_list
         self.selected_keys = []
         
-        # We use content_layout from ThemedDialog
+        # We use self.content_layout from ThemedDialog
         layout = self.content_layout
         
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content = QWidget(); self.form_layout = QVBoxLayout(content); scroll.setWidget(content)
         layout.addWidget(scroll)
-        
+
         self.checkboxes = {}
         for item in settings_list:
             cb = QCheckBox(item['label']); cb.setChecked(item['changed']); self.checkboxes[item['key']] = cb; self.form_layout.addWidget(cb)
@@ -118,7 +119,7 @@ class SaveConfirmationDialog(ThemedDialog):
         btn_layout = QHBoxLayout()
         select_all_btn = QPushButton("Select All"); select_all_btn.clicked.connect(self.select_all)
         save_btn = QPushButton("Save Selected"); save_btn.setDefault(True); save_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
+        cancel_btn = QPushButton("Cancel");cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(select_all_btn); btn_layout.addStretch(); btn_layout.addWidget(cancel_btn); btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
 
@@ -142,7 +143,7 @@ class FramelessColorDialog(QColorDialog):
         self.border_color = border_color or QColor("black")
         self.border_width = border_width
         self.drag_pos = None
-        
+
         self.border_filter = LabelBorderEventFilter(self.border_enabled, self.border_color, self.border_width, self.text_color, self)
         self._install_filter_recursive(self)
 
@@ -189,7 +190,7 @@ class FramelessFileDialog(QFileDialog):
         self.border_color = border_color or QColor("black")
         self.border_width = border_width
         self.drag_pos = None
-        
+
         self.border_filter = LabelBorderEventFilter(self.border_enabled, self.border_color, self.border_width, self.text_color, self)
         self._install_filter_recursive(self)
 
@@ -228,7 +229,7 @@ class ColorEditorDialog(QDialog):
     config_saved = pyqtSignal(str, dict) # album_id, {"palette": ..., "text_color": ...}
     art_changed = pyqtSignal(str, str, str) # album_id, track_id, image_path
 
-    def __init__(self, album_art_pixmap, album_id, track_id, color_cache, parent=None, media_source='spotify'):
+    def __init__(self, album_art_pixmap, album_id, track_id, color_cache, parent = None, media_source = 'spotify'):
         super().__init__(parent, Qt.FramelessWindowHint | Qt.Tool)
         self.setObjectName("ThemedDialog") # Use the same object name to get transparent background style
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -243,8 +244,8 @@ class ColorEditorDialog(QDialog):
         self.track_id = track_id
         self.media_source = media_source
         self.color_cache = color_cache
-        self.govee_devices = parent.govee_devices 
-        self.threadpool = QThreadPool()
+        self.govee_devices = parent.govee_devices
+        self.threadpool = QThreadPool()        
         self.drag_pos = QPoint()
         self._last_stylesheet_params = None
         self.blob_picker_widgets = []
@@ -1265,8 +1266,9 @@ class ColorEditorDialog(QDialog):
         start_pos = self.pos()
         end_pos = self.pos()
         offset = 50 # Slide distance
-        
-        if anim_dir == "From Top": start_pos.setY(start_pos.y() - offset)
+
+        if not duration: return
+        elif anim_dir == "From Top": start_pos.setY(start_pos.y() - offset)
         elif anim_dir == "From Bottom": start_pos.setY(start_pos.y() + offset)
         elif anim_dir == "From Left": start_pos.setX(start_pos.x() - offset)
         elif anim_dir == "From Right": start_pos.setX(start_pos.x() + offset)
@@ -1298,7 +1300,6 @@ class ColorEditorDialog(QDialog):
             return
         self._closing = True
         self._result_code = r
-        self.animate_exit()
 
     def animate_exit(self):
         anim_type = "Fade"
@@ -1308,8 +1309,9 @@ class ColorEditorDialog(QDialog):
         current_pos = self.pos()
         target_pos = QPoint(current_pos)
         offset = 50
-        
-        if anim_dir == "From Top": target_pos.setY(target_pos.y() - offset)
+
+        if not duration: return
+        elif anim_dir == "From Top": target_pos.setY(target_pos.y() - offset)
         elif anim_dir == "From Bottom": target_pos.setY(target_pos.y() + offset)
         elif anim_dir == "From Left": target_pos.setX(target_pos.x() - offset)
         elif anim_dir == "From Right": target_pos.setX(target_pos.x() + offset)
@@ -1880,7 +1882,7 @@ class ColorEditorDialog(QDialog):
     def remove_blob_color(self, index):
         if len(self.blob_colors) <= 1: return
         self.blob_colors.pop(index)
-        self.is_blob_auto = False
+        self.is_blob_auto = False; QApplication.processEvents()
         self.refresh_blob_rows()
         self._update_blob_buttons_style()
         self.update_previews()
@@ -2597,7 +2599,7 @@ class ColorEditorDialog(QDialog):
         msg = ThemedMessageBox("Critical Warning", warning_msg, [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value())
         
         if msg.exec_() == QDialog.Accepted:
-            # Second confirmation for safety
+             # Second confirmation for safety
             confirm_msg = "Please confirm one last time: Do you really want to wipe all cached data?"
             msg2 = ThemedMessageBox("Final Confirmation", confirm_msg, [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value())
             

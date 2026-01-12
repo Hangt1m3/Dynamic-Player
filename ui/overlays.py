@@ -68,6 +68,12 @@ class NotificationWidget(QWidget):
         self.pos_anim = QPropertyAnimation(self.content_widget, b"pos"); self.opacity_anim.finished.connect(self._on_anim_finished)
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.timeout.connect(self.fade_out)
         self._is_fading_out = False; self._anim_duration = 500; self._anim_type = "Fade"; self._direction = "From Top"
+        
+        # State for transitioning between songs
+        self._pending_transition = False
+        self._pending_style = None
+        self._pending_content = None
+        self._pending_anim = None
 
     def set_zoom(self, scale):
         self._scale = scale; w = int(350 * scale); h = int(90 * scale)
@@ -113,6 +119,41 @@ class NotificationWidget(QWidget):
             painter.drawPixmap(0, 0, size.width(), size.height(), pixmap.scaled(size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
             painter.end(); self.art_label.setPixmap(rounded)
 
+    def transition_to_notification(self, style_args, content_args, anim_args):
+        """
+        Orchestrates the transition. 
+        If visible: Animate Out (Old Data) -> Wait -> Apply New Data -> Animate In.
+        If hidden: Apply New Data -> Animate In.
+        """
+        # Always update the parameters for the incoming song
+        self._pending_style = style_args
+        self._pending_content = content_args
+        self._pending_anim = anim_args
+
+        if self.isVisible() and self.windowOpacity() > 0.01:
+            # We are currently showing a song. We must animate out first.
+            self._pending_transition = True
+            # Ensure we use the animation duration specified in the new args for consistency
+            self._anim_duration = anim_args.get('anim_duration', 500)
+            self.fade_out()
+        else:
+            # Not visible, apply immediately and show
+            self._apply_pending_and_show()
+
+    def _apply_pending_and_show(self):
+        if self._pending_style:
+            self.update_style(**self._pending_style)
+        if self._pending_content:
+            self.set_content(**self._pending_content)
+        if self._pending_anim:
+            self.show_notification(**self._pending_anim)
+        
+        # Clear pending data
+        self._pending_transition = False
+        self._pending_style = None
+        self._pending_content = None
+        self._pending_anim = None
+
     def show_notification(self, anim_type, direction, screen_pos, duration=4000, anim_duration=500, permanent=False):
         self._anim_duration = anim_duration; self._anim_type = anim_type; self._direction = direction; self._is_fading_out = False
         self.move(screen_pos); self.raise_(); self.pos_anim.stop(); self.opacity_anim.stop()
@@ -126,10 +167,10 @@ class NotificationWidget(QWidget):
         elif direction == "From Right": start_pos = QPoint(w, 0)
         
         if anim_type == "Fade":
-            self.content_widget.move(0, 0); self.setWindowOpacity(0.0)
+            self.content_widget.move(0, 0);self.setWindowOpacity(0.0)
             self.opacity_anim.setStartValue(0.0); self.opacity_anim.setEndValue(1.0); self.opacity_anim.setDuration(anim_duration); self.opacity_anim.setEasingCurve(QEasingCurve.OutQuad); self.opacity_anim.start()
         elif anim_type == "Slide" or anim_type == "Bounce":
-            self.setWindowOpacity(1.0); self.pos_anim.setStartValue(start_pos); self.pos_anim.setEndValue(end_pos); self.pos_anim.setDuration(anim_duration); self.pos_anim.setEasingCurve(QEasingCurve.OutBounce if anim_type == "Bounce" else QEasingCurve.OutExpo); self.pos_anim.start()
+            self.pos_anim.setStartValue(start_pos); self.pos_anim.setEndValue(QPoint(0,0)); self.pos_anim.setDuration(anim_duration); self.pos_anim.setEasingCurve(QEasingCurve.OutBounce if anim_type == "Bounce" else QEasingCurve.OutExpo); self.pos_anim.start()
         elif anim_type == "Fade Slide":
             self.setWindowOpacity(0.0); self.opacity_anim.setStartValue(0.0); self.opacity_anim.setEndValue(1.0); self.opacity_anim.setDuration(anim_duration); self.opacity_anim.setEasingCurve(QEasingCurve.OutQuad); self.opacity_anim.start()
             self.pos_anim.setStartValue(start_pos); self.pos_anim.setEndValue(end_pos); self.pos_anim.setDuration(anim_duration); self.pos_anim.setEasingCurve(QEasingCurve.OutExpo); self.pos_anim.start()
@@ -147,18 +188,25 @@ class NotificationWidget(QWidget):
         elif self._direction == "From Left": target_pos = QPoint(-w, 0)
         elif self._direction == "From Right": target_pos = QPoint(w, 0)
 
+        # Use mirrored easing curves and identical duration to the In animation
         if self._anim_type == "Fade":
-            self.opacity_anim.setStartValue(self.windowOpacity()); self.opacity_anim.setEndValue(0.0); self.opacity_anim.setDuration(self._anim_duration); self.opacity_anim.setEasingCurve(QEasingCurve.OutQuad); self.opacity_anim.start()
+            self.opacity_anim.setStartValue(self.windowOpacity()); self.opacity_anim.setEndValue(0.0); self.opacity_anim.setDuration(self._anim_duration); self.opacity_anim.setEasingCurve(QEasingCurve.OutQuad); self.opacity_anim.finished.connect(self._on_anim_finished); self.opacity_anim.start()
         elif self._anim_type == "Slide" or self._anim_type == "Bounce":
-            self.pos_anim.setStartValue(self.content_widget.pos()); self.pos_anim.setEndValue(QPoint(0, 0)); self.pos_anim.setDuration(self._anim_duration); self.pos_anim.setEasingCurve(QEasingCurve.InExpo); self.pos_anim.finished.connect(self._on_anim_finished); self.pos_anim.start()
+            self.pos_anim.setStartValue(QPoint(0,0)); self.pos_anim.setEndValue(target_pos); self.pos_anim.setDuration(self._anim_duration); 
+            # InExpo mirrors OutExpo/OutBounce well for exiting
+            self.pos_anim.setEasingCurve(QEasingCurve.InExpo); self.pos_anim.finished.connect(self._on_anim_finished); self.pos_anim.start()
         elif self._anim_type == "Fade Slide":
             self.opacity_anim.setStartValue(self.windowOpacity()); self.opacity_anim.setEndValue(0.0); self.opacity_anim.setDuration(self._anim_duration); self.opacity_anim.setEasingCurve(QEasingCurve.OutQuad)
             self.pos_anim.setStartValue(self.content_widget.pos()); self.pos_anim.setEndValue(target_pos); self.pos_anim.setDuration(self._anim_duration); self.pos_anim.setEasingCurve(QEasingCurve.InExpo)
-            self.opacity_anim.start(); self.pos_anim.start()
+            self.opacity_anim.finished.connect(self._on_anim_finished); self.opacity_anim.start(); self.pos_anim.start()
 
     def _on_anim_finished(self):
         self.timer.stop()
-        if self._is_fading_out: self.hide()
+        if self._is_fading_out:
+             self.hide()
+             # If we were fading out to show a NEW song, trigger that now.
+             if self._pending_transition:
+                 self._apply_pending_and_show()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton: self.clicked.emit(); self.fade_out()

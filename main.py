@@ -190,8 +190,8 @@ class SpotifyPlayer(QMainWindow):
             </ul>
             <p>Enjoy the vibes!</p>
             """
-            ThemedMessageBox("Welcome!", tutorial_text, [("Let's Go!", QDialog.Accepted)], self, QColor(self._current_bg_color), QColor(self._current_text_color), QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size).exec_()
-            settings.setValue("first_run", "false")
+            ThemedMessageBox("Welcome!", tutorial_text, [("Let's Go!", QDialog.Accepted)], self, self._current_bg_color, self._current_text_color, QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size).exec_()
+            settings.setValue("first_run", False)
 
     def _show_idle_screen(self):
         """Displays a default idle screen when no music is playing."""
@@ -1096,21 +1096,37 @@ class SpotifyPlayer(QMainWindow):
         if text_color is None:
             text_color = self._cur_text_color
 
-        self.notification_widget.update_style(
-            self._current_bg_color, 
-            text_color, 
-            self._current_font_family,
-            self._current_font_style,
-            self._current_text_border_enabled,
-            QColor(*self._current_text_border_color),
-            notif_opacity,
-            notif_border_enabled,
-            notif_border_color,
-            self._current_text_border_size
-        )
-        self.notification_widget.set_content(title, artist, pixmap)
-        self.notification_widget.show_notification(anim_type, anim_dir, QPoint(x, y), duration, anim_duration)
-        self.notification_widget.show_notification(anim_type, anim_dir, QPoint(x, y), duration, anim_duration, permanent)
+        # Bundle arguments instead of applying them immediately
+        style_args = {
+            "bg_color": self._current_bg_color,
+            "text_color": text_color,
+            "font_family": self._current_font_family,
+            "font_style": self._current_font_style,
+            "border_enabled": self._current_text_border_enabled,
+            "border_color": QColor(*self._current_text_border_color),
+            "notif_opacity": notif_opacity,
+            "notif_border_enabled": notif_border_enabled,
+            "notif_border_color": notif_border_color,
+            "border_size": self._current_text_border_size
+        }
+
+        content_args = {
+            "title": title,
+            "artist": artist,
+            "pixmap": pixmap
+        }
+
+        anim_args = {
+            "anim_type": anim_type,
+            "direction": anim_dir,
+            "screen_pos": QPoint(x, y),
+            "duration": duration,
+            "anim_duration": anim_duration,
+            "permanent": permanent
+        }
+
+        # Use the transition method to handle the animation lifecycle
+        self.notification_widget.transition_to_notification(style_args, content_args, anim_args)
 
     def _on_notification_clicked(self):
         if self.isMinimized():

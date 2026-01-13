@@ -1335,9 +1335,9 @@ class ColorEditorDialog(QDialog):
 
     def fetch_updates(self):
         self.updates_browser.setHtml("<p style='color: #aaa;'>Loading updates from GitHub...</p>")
-        worker = GitHubUpdatesWorker("Hang1m3", "Music-Player-Python")
-        worker = GitHubUpdatesWorker("Hang1m3", "Music-Player-Python", token=GITHUB_TOKEN)
-        worker = GitHubUpdatesWorker("Hangt1m3", "Music-Player-Python", token=GITHUB_TOKEN)
+        worker = GitHubUpdatesWorker("Hang1m3", "Dynamic-Player")
+        worker = GitHubUpdatesWorker("Hang1m3", "Dynamic-Player", token=GITHUB_TOKEN)
+        worker = GitHubUpdatesWorker("Hangt1m3", "Dynamic-Player", token=GITHUB_TOKEN)
         worker.signals.result.connect(self.display_updates)
         worker.signals.error.connect(self.display_updates) # Display error as HTML too
         self.threadpool.start(worker)

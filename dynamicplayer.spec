@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # This line bundles icon.ico into the root of the EXE
+    datas=[('icon.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,6 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
+    # This line names your output file "dynamicplayer.exe"
     name='DynamicPlayer',
     debug=False,
     bootloader_ignore_signals=False,
@@ -29,11 +30,13 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
+    # This hides the black console window (True = show, False = hide)
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=icon.ico
+    # This sets the file icon for the EXE file itself in Windows Explorer
+    icon='icon.ico',
 )

@@ -127,7 +127,7 @@ class SaveConfirmationDialog(ThemedDialog):
         for cb in self.checkboxes.values():
             cb.setChecked(True)
         
-    def accept(self):
+    def accept(self, *args):
         self.selected_keys = [k for k, cb in self.checkboxes.items() if cb.isChecked()]
         super().accept()
 
@@ -1295,11 +1295,23 @@ class ColorEditorDialog(QDialog):
             self.opacity_anim.start(); self.pos_anim.start()
 
     def done(self, r):
+        # Prevent double-closing/animation if triggered multiple times
         if getattr(self, '_closing', False):
             super().done(r)
             return
+        
         self._closing = True
         self._result_code = r
+        self.animate_exit()
+
+    def _on_exit_anim_finished(self):
+        super(ColorEditorDialog, self).done(self._result_code)
+
+    def animate_exit(self):
+        # Using Fade Slide Up effect for exit
+        duration = 300
+        current_pos = self.pos()
+        target_pos = QPoint(current_pos.x(), current_pos.y() - 30)
 
     def animate_exit(self):
         anim_type = "Fade"
@@ -2409,7 +2421,7 @@ class ColorEditorDialog(QDialog):
 
     def save_and_close(self, quick=False):
         # 1. Collect all changes from UI controls
-        global_changes = self._get_global_changes()
+        global_changes = self._get_global_changes()        
         theme_changes = []
         if self.media_source == 'spotify':
             theme_changes = self._collect_theme_changes()
@@ -2459,7 +2471,7 @@ class ColorEditorDialog(QDialog):
                         album_config[item['key']] = item['value']
             
             # Apply updates to cache
-            if theme_keys_processed:
+            if theme_keys_processed:        
                 self.color_cache.set_album_data(self.album_id, album_config)
                 
                 # Update parent window blob density immediately
@@ -2515,7 +2527,7 @@ class ColorEditorDialog(QDialog):
                 # User chose not to restart, but we still close the dialog as requested
                 self.accept()
         else:
-            # No credential changes, just close
+            # No credential changes, just close        
             self.accept()
 
     def find_govee_devices(self):

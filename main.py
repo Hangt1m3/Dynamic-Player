@@ -1016,7 +1016,17 @@ class SpotifyPlayer(QMainWindow):
 
     def _trigger_notification(self, title, artist, pil_img, text_color=None):
         settings = QSettings("SpotifySync", "App")
+        
+        # Master Override: Check if notifications are globally enabled
         if settings.value("notification_enabled", "false") != "true":
+            if self.notification_widget.isVisible(): self.notification_widget.fade_out()
+            return
+        
+        # Master Override: Check if notifications are globally enabled
+        if settings.value("notification_enabled", "false") != "true":
+            # If disabled, ensure any existing notification hides immediately
+            if self.notification_widget.isVisible():
+                self.notification_widget.fade_out()
             return
 
         screens = QApplication.screens()
@@ -1096,7 +1106,6 @@ class SpotifyPlayer(QMainWindow):
         if text_color is None:
             text_color = self._cur_text_color
 
-        # Bundle arguments instead of applying them immediately
         style_args = {
             "bg_color": self._current_bg_color,
             "text_color": text_color,
@@ -1125,7 +1134,6 @@ class SpotifyPlayer(QMainWindow):
             "permanent": permanent
         }
 
-        # Use the transition method to handle the animation lifecycle
         self.notification_widget.transition_to_notification(style_args, content_args, anim_args)
 
     def _on_notification_clicked(self):

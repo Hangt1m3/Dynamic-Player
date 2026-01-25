@@ -9,7 +9,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPoint, QSize, QEvent, 
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QWidget, QSizePolicy, QScrollArea, QCheckBox,
                              QGroupBox, QFormLayout, QComboBox, QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, QTextBrowser, 
                              QFrame, QColorDialog, QFileDialog, QTabWidget, QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit, QApplication, QAbstractButton)
-from PyQt5.QtGui import QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, QGuiApplication, QPixmap, QImage
+from PyQt5.QtGui import QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, QGuiApplication, QPixmap, QImage, QFontDatabase
 from ui.styles import get_common_stylesheet
 from ui.widgets import BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, NoScrollComboBox
 from .styles import get_common_stylesheet
@@ -18,6 +18,7 @@ from ui.overlays import NotificationWidget
 from services import ColorCache
 from workers import GitHubUpdatesWorker, GoveeDeviceFinderWorker
 from utils import get_contrast_ratio, get_best_text_color, get_best_border_color, extract_palette_from_image
+from ui.widgets import BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, NoScrollComboBox, FontFamilyDelegate, FontStyleDelegate
 from config import SPOTIPY_REDIRECT_URI, GITHUB_TOKEN
 from PyQt5.QtCore import pyqtSlot, QDir, Qt, QSettings, QThreadPool
 
@@ -146,6 +147,50 @@ class FramelessColorDialog(QColorDialog):
 
         self.border_filter = LabelBorderEventFilter(self.border_enabled, self.border_color, self.border_width, self.text_color, self)
         self._install_filter_recursive(self)
+
+        # FIX: Apply specific stylesheet to ensure buttons are readable and UI matches theme
+        btn_bg = self.bg_color.lighter(130).name()
+        btn_hover = self.accent_color.name()
+        txt_col = self.text_color.name()
+        
+        self.setStyleSheet(f"""
+            QDialog {{ background: transparent; }}
+            QLabel {{ color: {txt_col}; }}
+            
+            /* Target both standard push buttons and those inside a button box */
+            QPushButton {{
+                background-color: {btn_bg};
+                color: {txt_col};
+                border: 1px solid {self.border_color.name() if self.border_enabled else '#555'};
+                border-radius: 4px;
+                padding: 4px 12px;
+                min-width: 60px;
+                min-height: 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {btn_hover};
+                color: {self.bg_color.name()};
+            }}
+            /* Specific fix for standard QColorDialog input fields if visible */
+            QLineEdit {{
+                color: {txt_col};
+                background-color: {self.bg_color.darker(120).name()};
+                border: 1px solid #555;
+            }}
+            /* Ensure the abstract color picker widgets don't get messed up */
+            QAbstractSpinBox {{
+                 color: {txt_col};
+                 background-color: {self.bg_color.darker(120).name()};
+            }}
+        """)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # FIX: Rename "Custom colors" to "Recent colors"
+        # We search specifically for the Label that holds this text
+        for label in self.findChildren(QLabel):
+            if "Custom colors" in label.text():
+                label.setText(label.text().replace("Custom colors", "Recent colors"))
 
     def _install_filter_recursive(self, widget):
         for child in widget.children():
@@ -458,6 +503,13 @@ class ColorEditorDialog(QDialog):
         self.ui_labels.append(lbl)
         return lbl
 
+    def _update_combo_display_font(self, combo, family):
+        """Updates the font of the combobox button itself to match the selected family."""
+        if family:
+            f = QFont(family)
+            f.setPointSize(9) # Keep size reasonable for the UI
+            combo.setFont(f)
+
     def _create_dynamic_label(self, text, is_html_or_wrapped=False):
         # Use BorderedLabel for simple text to get the effect, standard QLabel for HTML/Wrap to avoid broken rendering
         lbl = QLabel(text) if is_html_or_wrapped else BorderedLabel(text)
@@ -688,6 +740,16 @@ class ColorEditorDialog(QDialog):
         self.default_font_family_combo = NoScrollComboBox()
         self.default_font_style_combo = NoScrollComboBox()
 
+        # --- NEW CODE: Apply Delegates for Global Settings ---
+        self.default_font_family_combo.setItemDelegate(FontFamilyDelegate(self.default_font_family_combo))
+        
+        # Pass a lambda function so the style delegate can always find the CURRENT text of the family combo
+        self.default_font_style_combo.setItemDelegate(
+            FontStyleDelegate(lambda: self.default_font_family_combo.currentText(), self.default_font_style_combo)
+        )
+        # -----------------------------------------------------
+
+
         self.default_font_size_slider = QSlider(Qt.Horizontal); self.default_font_size_slider.setRange(50, 200); self.default_font_size_slider.setValue(self.initial_default_font_size_scale)
         self.default_font_size_label = self._create_dynamic_label(f"{self.initial_default_font_size_scale}%")
         self.default_font_size_slider.valueChanged.connect(lambda v: self.default_font_size_label.setText(f"{v}%"))
@@ -887,6 +949,16 @@ class ColorEditorDialog(QDialog):
         self.font_style_combo = NoScrollComboBox()
         self.font_style_combo.setToolTip("Select the style for the chosen font family.")
         self.font_style_combo.setEnabled(self.is_font_family_overridden)
+        
+        # --- NEW: Apply Delegate to Theme Font Family ---
+        self.font_family_combo.setItemDelegate(FontFamilyDelegate(self.font_family_combo))
+        # ------------------------------------------------
+
+        self.font_style_combo = NoScrollComboBox()
+        self.font_style_combo.setToolTip("Select the style for the chosen font family.")
+        self.font_style_combo.setEnabled(self.is_font_family_overridden)
+
+
         self.font_search_input = QLineEdit()
         self.font_search_input.setPlaceholderText("Search fonts...")
         self.font_search_input.setEnabled(self.is_font_family_overridden)
@@ -1654,6 +1726,7 @@ class ColorEditorDialog(QDialog):
         self.font_search_input.setEnabled(checked)
         self.font_family_combo.setEnabled(checked)
         self.font_style_combo.setEnabled(checked)
+        self.font_size_label.setEnabled(checked) # Ensure label is disabled too
         if not checked:
             default_family = self.parent().default_font_family
             default_style = self.parent().default_font_style
@@ -1668,10 +1741,12 @@ class ColorEditorDialog(QDialog):
             self.font_size_slider.setValue(self.parent().default_font_size_scale)
         self.update_previews()
 
+
     def _on_override_progress_bar_toggled(self, checked):
         self.progress_bar_checkbox.setEnabled(checked)
         if not checked:
             self.progress_bar_checkbox.setChecked(self.default_progress_bar_checkbox.isChecked())
+
 
     def _on_override_border_size_toggled(self, checked):
         self.text_border_size_slider.setEnabled(checked)
@@ -1809,8 +1884,13 @@ class ColorEditorDialog(QDialog):
             self.is_text_color_auto = False
             self.ui_text_color = new_color
             self._on_auto_text_toggled(False)
-            self._update_auto_text_border_color()
-            self._update_auto_text_border_enable()
+            
+            # FIX: Manually picking text color should NOT auto-enable the border.
+            # We assume if the user is picking text, they want full manual control.
+            # We disable the auto-border logic so it doesn't force the outline on.
+            self.is_text_border_auto = False
+            self._update_text_border_auto_state()
+            
             self.update_previews()
             self.update_stylesheet()
     
@@ -1900,25 +1980,27 @@ class ColorEditorDialog(QDialog):
         self.update_previews()
 
     def refresh_blob_rows(self):
-        """Rebuilds or updates the blob color rows to ensure indices and labels are correct."""
-        current_count = len(self.blob_picker_widgets)
-        target_count = len(self.blob_colors)
-        
-        # Update existing rows
-        for i in range(min(current_count, target_count)):
-            self.blob_picker_widgets[i]["preview"].setStyleSheet(f"background-color: {self.blob_colors[i].name()};")
+        """Rebuilds the blob color rows to ensure indices and labels are correct."""
+        # Remove all rows from the layout. 
+        # Note: removeRow(0) automatically deletes the widgets in that row.
+        while self.blob_layout.rowCount() > 0:
+            self.blob_layout.removeRow(0)
             
-        # Add new rows
-        for i in range(current_count, target_count):
-            self._add_blob_color_row(self.blob_colors[i], i)
-            
-        # Remove excess rows
-        for i in range(current_count - 1, target_count - 1, -1):
-            self.blob_layout.removeRow(i)
-            widget_info = self.blob_picker_widgets.pop(i)
+        # Clean up references in ui_labels
+        # Since widgets are already deleted by removeRow, we MUST NOT call deleteLater().
+        # We simply remove the invalid python wrappers from our list.
+        for widget_info in self.blob_picker_widgets:
             if widget_info["label"] in self.ui_labels:
-                self.ui_labels.remove(widget_info["label"]) 
-            widget_info["label"].deleteLater()
+                self.ui_labels.remove(widget_info["label"])
+            
+        self.blob_picker_widgets = []
+
+        # Rebuild rows with fresh indices based on current blob_colors list
+        for i, color in enumerate(self.blob_colors):
+            self._add_blob_color_row(color, i)
+        
+        # Re-apply styles to the newly created buttons
+        self._update_blob_buttons_style()
 
     def pick_blob_color(self, index):
         if index >= len(self.blob_colors): return
@@ -2142,11 +2224,21 @@ class ColorEditorDialog(QDialog):
             self.initial_shadow_enabled = self.shadow_checkbox.isChecked()
             
             font_family = self.cached_data.get("font_family")
-            self.is_font_family_overridden = font_family is not None
-            self.override_font_checkbox.setChecked(self.is_font_family_overridden)
             
-            target_font = font_family if self.is_font_family_overridden else main_window_state._current_font_family
-            target_style = self.cached_data.get("font_style") if self.is_font_family_overridden else main_window_state._current_font_style
+            # FIX: Override defaults logic. If no specific font saved, default to Overridden=True
+            if font_family is None:
+                self.is_font_family_overridden = True
+                target_font = main_window_state._current_font_family
+                target_style = main_window_state._current_font_style
+            else:
+                self.is_font_family_overridden = True # Always True if we have data or default
+                target_font = font_family
+                target_style = self.cached_data.get("font_style")
+
+            self.override_font_checkbox.setChecked(self.is_font_family_overridden)
+            self.font_family_combo.setEnabled(self.is_font_family_overridden)
+            self.font_style_combo.setEnabled(self.is_font_family_overridden)
+            self.font_search_input.setEnabled(self.is_font_family_overridden)
             
             self.initial_font_family = target_font
             self.initial_font_style = target_style
@@ -2160,6 +2252,10 @@ class ColorEditorDialog(QDialog):
             self.is_font_size_overridden = font_size is not None
             self.override_size_checkbox.setChecked(self.is_font_size_overridden)
             self.font_size_slider.setValue(font_size if self.is_font_size_overridden else main_window_state._current_font_size_scale)
+            
+            # FIX: Explicitly disable slider if unchecked
+            self.font_size_slider.setEnabled(self.is_font_size_overridden)
+            
             self.initial_font_size_scale = self.font_size_slider.value()
             
             # Text Border
@@ -2182,6 +2278,10 @@ class ColorEditorDialog(QDialog):
             self.is_border_size_overridden = text_border_size is not None
             self.override_border_size_checkbox.setChecked(self.is_border_size_overridden)
             self.text_border_size_slider.setValue(text_border_size if self.is_border_size_overridden else main_window_state._current_text_border_size)
+            
+            # FIX: Explicitly disable slider if unchecked
+            self.text_border_size_slider.setEnabled(self.is_border_size_overridden)
+            
             self.initial_text_border_size = self.text_border_size_slider.value()
             
             # Case
@@ -2197,13 +2297,20 @@ class ColorEditorDialog(QDialog):
             self.is_progress_bar_overridden = pb_enabled is not None
             self.override_progress_bar_checkbox.setChecked(self.is_progress_bar_overridden)
             self.progress_bar_checkbox.setChecked(pb_enabled if self.is_progress_bar_overridden else main_window_state.default_progress_bar_enabled)
+            
+            # FIX: Explicitly disable checkbox if unchecked
+            self.progress_bar_checkbox.setEnabled(self.is_progress_bar_overridden)
+            
             self.initial_progress_bar_enabled = self.progress_bar_checkbox.isChecked()
             
             # Brightness
             cached_brightness = self.cached_data.get("govee_brightness")
             self.is_brightness_overridden = cached_brightness is not None
             self.override_brightness_checkbox.setChecked(self.is_brightness_overridden)
+            
+            # FIX: Explicitly disable slider if unchecked
             self.govee_brightness_slider.setEnabled(self.is_brightness_overridden)
+            
             if self.is_brightness_overridden:
                 self.govee_brightness_slider.setValue(int(cached_brightness * 100))
             else:
@@ -2631,4 +2738,7 @@ class ColorEditorDialog(QDialog):
             if msg2.exec_() == QDialog.Accepted:
                 self.color_cache.clear()
                 ThemedMessageBox("Success", "Album cache has been cleared.", [("OK", QDialog.Accepted)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value()).exec_()
-    pass
+
+        # --- NEW: Apply Delegate to Theme Font Style ---
+        self.font_style_combo.setItemDelegate(FontStyleDelegate(lambda: self.font_family_combo.currentText(), self.font_style_combo))
+        # -----------------------------------------------

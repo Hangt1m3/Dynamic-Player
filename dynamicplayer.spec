@@ -1,12 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_submodules
+
+# 1. Collect all submodules for winsdk to prevent "Module not found" errors
+winsdk_hidden_imports = collect_submodules('winsdk')
+
+# 2. Add other dynamic libraries that might be missed
+other_hidden_imports = [
+    'pystray', 
+    'PIL', 
+    'PIL.Image', 
+    'winsdk.windows.media.control' # Explicitly ensuring the media control is there
+]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    # This line bundles icon.ico into the root of the EXE
-    datas=[('icon.ico', '.')],
-    hiddenimports=[],
+    datas=[
+        ('icon.ico', '.'), 
+        # ('fonts', 'fonts'),  <-- UNCOMMENT THIS LINE if you have a physical 'fonts' folder
+    ],
+    # 3. Combine the hidden imports
+    hiddenimports=winsdk_hidden_imports + other_hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +37,6 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    # This line names your output file "dynamicplayer.exe"
     name='DynamicPlayer',
     debug=False,
     bootloader_ignore_signals=False,
@@ -30,13 +44,11 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    # This hides the black console window (True = show, False = hide)
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # This sets the file icon for the EXE file itself in Windows Explorer
     icon='icon.ico',
 )

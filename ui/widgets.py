@@ -5,8 +5,8 @@ from PyQt5.QtCore import (Qt, pyqtProperty, pyqtSignal, QObject, QPointF, QRectF
                           QPropertyAnimation, QEasingCurve, QTimer, QParallelAnimationGroup, QRect, QEvent)
 from PyQt5.QtWidgets import (QLabel, QProgressBar, QGraphicsOpacityEffect, QSizePolicy, QWidget, 
                              QPushButton, QComboBox, QGroupBox, QCheckBox, QRadioButton, QAbstractButton)
-from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap)
-
+from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase)
+from PyQt5.QtWidgets import QStyledItemDelegate
 class BlobManager:
     """Manages the positions and properties of all blobs to prevent overlap."""
     def __init__(self, parent, parent_size, palette=None):
@@ -47,17 +47,26 @@ class BlobManager:
 
     def adjust_blob_count(self):
         if not self.palette: return
-        area = self.parent_size.width() * self.parent_size.height()
-        min_blobs = len(self.palette) if self.palette else 1
-        max_blobs = 8
-        calculated_count = int(area / self.density)
-        target_count = max(min_blobs, min(max_blobs, calculated_count))
+        # QColor is not hashable, so we use rgba() to count unique colors
+        unique_colors = set(c.rgba() for c in self.palette)
+        variety_count = len(unique_colors)
+        # New Logic: Choose number of blobs based on color variety
+        # Minimum 2, Maximum 10. roughly 2 blobs per unique color in palette.
+        unique_colors_count = len(self.palette)
+        target_count = max(2, min(10, unique_colors_count * 2))
+
+        # Add blobs if we have too few
         while len(self.blobs) < target_count:
             if not self.palette: break
-            color = self.palette[len(self.blobs) % len(self.palette)]; 
+            # Cycle through palette to ensure even representation
+            color_index = len(self.blobs) % len(self.palette)
+            color = self.palette[color_index]
             Blob(self, color, start_delay=random.randint(0, 2000))
-        while len(self.blobs) > target_count:
+            
+        # Remove blobs if we have too many
+        while len(self.blobs) > target_count :
             if self.blobs:
+                # Remove the most transparent (fading) blob first
                 blob_to_remove = min(self.blobs, key=lambda b: b.opacity)
                 self.blobs.remove(blob_to_remove)
                 self.dying_blobs.append(blob_to_remove)
@@ -489,3 +498,49 @@ class CircularButton(QPushButton):
             QPushButton:hover { background-color: rgba(40, 40, 40, 0.8); border: 1px solid white; }
             QPushButton:pressed { background-color: rgba(0, 0, 0, 0.6); }
         """)
+
+# --- NEW ADDITIONS BELOW ---
+
+class FontFamilyDelegate(QStyledItemDelegate):
+    """
+    Optimized delegate that renders the font name in its own font family.
+    Only creates QFont objects for items currently visible on screen.
+    """
+    def paint(self, painter, option, index):
+        font_family = index.data(Qt.DisplayRole)
+        if font_family:
+            # Create a lightweight font object just for painting this item
+            my_font = QFont(font_family)
+            my_font.setPointSize(10) # Keep size consistent
+            option.font = my_font
+        super().paint(painter, option, index)
+
+class FontStyleDelegate(QStyledItemDelegate):
+    """
+    Optimized delegate that renders the font style (Bold, Italic) 
+    using the currently selected family from the parent dropdown.
+    """
+    def __init__(self, family_getter, parent=None):
+        super().__init__(parent)
+        self.family_getter = family_getter
+
+    def paint(self, painter, option, index):
+        style_name = index.data(Qt.DisplayRole)
+        current_family = self.family_getter()
+        
+        if style_name and current_family:
+            # Attempt to find the specific style for the current family
+            db = QFontDatabase()
+            # 10 is a default point size, we just want the style visual
+            styled_font = db.font(current_family, style_name, 10)
+            
+            # Fallback: if the specific style returns a generic font (meaning it wasn't found),
+            # we try to manually apply common styles for visual feedback.
+            if db.isSmoothlyScalable(current_family, style_name):
+                 option.font = styled_font
+            else:
+                 # Manually simulate if exact match fails (rare but safe)
+                 option.font.setFamily(current_family)
+                 if "Bold" in style_name: option.font.setBold(True)
+                 if "Italic" in style_name: option.font.setItalic(True)
+        super().paint(painter, option, index)

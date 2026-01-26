@@ -4,6 +4,7 @@ import asyncio
 import traceback
 import requests
 import base64
+import hashlib 
 import json
 from PIL import Image
 from PyQt5.QtCore import QObject, pyqtSignal, QRunnable, pyqtSlot, QDateTime, Qt, QDir
@@ -125,27 +126,57 @@ class TrackLoaderWorker(QRunnable):
         finally: self.signals.finished.emit()
 
 class GitHubUpdatesWorker(QRunnable):
-    class Signals(QObject): result = pyqtSignal(object); error = pyqtSignal(str)
-    def __init__(self, owner, repo, token=None): super().__init__(); self.owner = owner; self.repo = repo; self.token = token; self.signals = self.Signals()
+    class Signals(QObject): result = pyqtSignal(dict); error = pyqtSignal(str) 
+    def __init__(self, owner, repo, token=None, current_version="0.0.0"): 
+        super().__init__()
+        self.owner = owner
+        self.repo = repo
+        self.token = token
+        self.current_version = current_version
+        self.signals = self.Signals()
+
     @pyqtSlot()
     def run(self):
-        url = f"https://api.github.com/repos/{self.owner}/{self.repo}/commits?per_page=12"
+        # Fetch the LATEST RELEASE instead of just commits
+        url = f"https://api.github.com/repos/{self.owner}/{self.repo}/releases/latest"
         headers = {}
         if self.token: headers["Authorization"] = f"Bearer {self.token}"
+        
         try:
             response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            commits = response.json()
-            commits_list = []
-            for commit in commits:
-                msg = commit['commit']['message']; lines = msg.split('\n')
-                commits_list.append({
-                    "title": lines[0], "author": commit['commit']['author']['name'],
-                    "date": QDateTime.fromString(commit['commit']['author']['date'], Qt.ISODate).toString("MMM d, yyyy"),
-                    "desc": "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+            
+            # Handle case where no releases exist yet
+            if response.status_code == 404:
+                self.signals.result.emit({
+                    "update_available": False,
+                    "latest_version": self.current_version,
+                    "body": "No official releases found.",
+                    "url": ""
                 })
-            self.signals.result.emit(commits_list)
-        except Exception as e: self.signals.error.emit(f"<p style='color: #ff5555;'>Could not fetch updates: {str(e)}</p>")
+                return
+
+            response.raise_for_status()
+            release_data = response.json()
+            
+            # Strip 'v' if present (e.g. v1.0.0 -> 1.0.0)
+            latest_tag = release_data.get("tag_name", "0.0.0").lstrip("v")
+            html_url = release_data.get("html_url", "")
+            body = release_data.get("body", "")
+
+            # Simple string comparison (for now). 
+            # If they differ, we assume it's an update.
+            update_available = latest_tag != self.current_version
+
+            self.signals.result.emit({
+                "update_available": update_available,
+                "latest_version": latest_tag,
+                "current_version": self.current_version,
+                "body": body,
+                "url": html_url
+            })
+
+        except Exception as e: 
+            self.signals.error.emit(f"Could not check for updates: {str(e)}")
 
 class SpotifyPollingWorker(QRunnable):
     class Signals(QObject): track_changed = pyqtSignal(dict); playback_state_changed = pyqtSignal(dict); no_playback = pyqtSignal()
@@ -174,32 +205,78 @@ if IS_WINDOWS:
     class WindowsMediaWorker(QRunnable):
         class Signals(QObject): track_changed = pyqtSignal(dict); no_playback = pyqtSignal()
         def __init__(self): super().__init__(); self.signals = self.Signals(); self.is_running = True; self.current_media_id = None
+        
+        def _generate_id(self, text):
+            """Generates a consistent MD5 hash ID from text to simulate a Spotify ID."""
+            if not text: return "unknown_id"
+            return hashlib.md5(text.encode('utf-8')).hexdigest()
+
         async def _get_media_info(self):
             try:
                 manager = await MediaManager.request_async()
                 if not manager: return None
                 session = manager.get_current_session()
-                if not session or session.source_app_user_model_id.startswith("Spotify"): return None
+                
+                # Filter out Spotify (let the specific Spotify worker handle that) or empty sessions
+                if not session or session.source_app_user_model_id.lower().startswith("spotify"): 
+                    return None
+                    
                 info = await session.try_get_media_properties_async()
                 if info and info.title:
-                    media_id = f"{info.title}{info.artist or ''}{info.album_title or ''}"
+                    # Extract Metadata
+                    title = info.title
+                    artist = info.artist or "Unknown Artist"
+                    album_title = info.album_title or "Unknown Album"
+                    
+                    # --- GENERATE SYNTHETIC IDs ---
+                    # We create a unique hash based on the metadata. 
+                    # This ensures that every time you play this album, it generates the SAME ID,
+                    # allowing "Per Album" settings to save and load correctly.
+                    track_id = self._generate_id(f"{title}{artist}")
+                    album_id = self._generate_id(f"{album_title}{artist}")
+                    
+                    # Fetch Thumbnail
                     thumbnail_data = None
                     if info.thumbnail:
                         stream = await info.thumbnail.open_read_async()
                         if stream and stream.size > 0:
                             thumbnail_data = bytearray(stream.size)
                             data_reader = DataReader(stream); await data_reader.load_async(stream.size); data_reader.read_bytes(thumbnail_data)
-                    return {"id": media_id, "item": {"name": info.title, "artists": [{"name": info.artist or ""}], "album": {"name": info.album_title or "", "images": []}, "id": media_id, "album_id": info.album_title or media_id}, "is_playing": True, "progress_ms": 0, "thumbnail_data": thumbnail_data}
+                    
+                    # Construct an item dictionary that mimics the Spotify API structure
+                    return {
+                        "id": track_id, 
+                        "item": {
+                            "name": title, 
+                            "artists": [{"name": artist}], 
+                            "album": {
+                                "name": album_title, 
+                                "images": [], # Local media has no URLs
+                                "id": album_id # <--- This enables Per-Album settings
+                            }, 
+                            "id": track_id, 
+                            "duration_ms": 0 # Duration is often unavailable in this API
+                        }, 
+                        "is_playing": True, 
+                        "progress_ms": 0, 
+                        "thumbnail_data": thumbnail_data
+                    }
             except Exception: pass
             return None
+            
         async def _main_loop(self):
             while self.is_running:
                 info = await self._get_media_info()
                 if info:
-                    if info["id"] != self.current_media_id: self.current_media_id = info["id"]; self.signals.track_changed.emit(info)
+                    if info["id"] != self.current_media_id: 
+                        self.current_media_id = info["id"]
+                        self.signals.track_changed.emit(info)
                 else:
-                    if self.current_media_id is not None: self.current_media_id = None; self.signals.no_playback.emit()
+                    if self.current_media_id is not None: 
+                        self.current_media_id = None
+                        self.signals.no_playback.emit()
                 await asyncio.sleep(2)
+                
         @pyqtSlot()
         def run(self): asyncio.run(self._main_loop())
         def stop(self): self.is_running = False

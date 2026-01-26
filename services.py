@@ -4,8 +4,11 @@ import json
 import threading
 import time
 import requests
-from PyQt5.QtCore import QStandardPaths, QDir
+from PyQt5.QtCore import QStandardPaths, QDir, QTimer
 from utils import rgb_to_hsl, hsl_to_rgb, normalize_color
+from PyQt5.QtMultimedia import QSoundEffect
+from PyQt5.QtCore import QUrl, QObject, QEvent, pyqtSignal, QCoreApplication
+import random
 
 class ColorCache:
     """Handles loading, saving, and accessing cached album colors."""
@@ -109,3 +112,149 @@ class GoveeController:
                     except Exception: errors.append(f"Error (Brightness) - {device_info.get('name', 'Light')}")
                     time.sleep(0.4)
         return errors
+    
+class SoundManager(QObject):
+    """
+    Manages global sound effects with pitch and volume randomization
+    to prevent audio fatigue (listener adaptation).
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.sounds = {} # Master templates
+        self.sound_pools = {} # Pools for overlap
+        self.enabled = True
+        self.base_volume = 0.75
+        
+        # Load sounds by name. 
+        # _load_sound will automatically check for .wav and .mp3
+        self._load_sound("click", "click")
+        self._load_sound("hover", "hover")
+        self._load_sound("slide", "slide")
+        
+        # New distinct toggle sounds (replacing the single 'toggle.wav')
+        self._load_sound("toggle_on", "toggle_on")
+        self._load_sound("toggle_off", "toggle_off")
+        
+    def _load_sound(self, name, base_filename):
+        """Loads a sound effect into memory, checking for .wav and .mp3."""
+        # We import resource_path here to avoid circular imports
+        from utils import resource_path 
+        
+        found_path = None
+        # Check extensions in order of preference
+        for ext in [".wav", ".mp3"]:
+            full_path = resource_path(os.path.join("sounds", base_filename + ext))
+            if os.path.exists(full_path):
+                found_path = full_path
+                break
+        
+        if found_path:
+            effect = QSoundEffect()
+            effect.setSource(QUrl.fromLocalFile(found_path))
+            effect.setVolume(self.base_volume)
+            self.sounds[name] = effect
+            self.sound_pools[name] = [] # Initialize empty pool
+
+    def play(self, name, pitch_shift=True, overlap=False):
+        """
+        Plays a sound.
+        :param overlap: If True, allows multiple instances of this sound to play simultaneously.
+        """
+        if not self.enabled or name not in self.sounds:
+            return
+
+        # Select the effect instance to use
+        effect = None
+        
+        if overlap:
+            # Look for an idle effect in the pool
+            pool = self.sound_pools[name]
+            for s in pool:
+                if not s.isPlaying():
+                    effect = s
+                    break
+            
+            # If no idle effect found, create a new one (clone from master)
+            if effect is None:
+                # Limit pool size to prevent memory leaks if something goes wrong
+                if len(pool) < 20: 
+                    effect = QSoundEffect()
+                    effect.setSource(self.sounds[name].source())
+                    pool.append(effect)
+                else:
+                    # Pool full, steal the oldest one (index 0)
+                    effect = pool[0]
+                    effect.stop()
+        else:
+            # Use the single master instance
+            effect = self.sounds[name]
+            if effect.isPlaying():
+                effect.stop()
+
+        # Randomize volume slightly (±5%) to feel organic
+        vol_variation = random.uniform(0.95, 1.05)
+        effect.setVolume(max(0.0, min(1.0, self.base_volume * vol_variation)))
+
+        # Randomize pitch (playback rate) slightly (±2%)
+        if pitch_shift and hasattr(effect, 'setPlaybackRate'):
+             rate_variation = random.uniform(0.98, 1.02)
+             effect.setPlaybackRate(rate_variation)
+
+        effect.play()
+
+class GlobalSoundFilter(QObject):
+    """
+    Event filter that sits on the QApplication to detect 
+    clicks and hovers globally without manual connections.
+    """
+    def __init__(self, sound_manager):
+        super().__init__()
+        self.sm = sound_manager
+
+    def _check_val(self, slider, old_val):
+        """Checks if the value actually changed after the event was processed."""
+        try:
+            if slider.value() != old_val:
+                # Use overlap=True to allow rapid tick sounds (zipper effect)
+                self.sm.play("slide", overlap=True)
+        except RuntimeError:
+            pass
+
+    def eventFilter(self, obj, event):
+        # Check for Button Clicks
+        if event.type() == QEvent.MouseButtonPress:
+            if obj.inherits("QAbstractButton"): 
+                if obj.isEnabled():
+                    if obj.isCheckable():
+                        # If the button IS currently checked, pressing it will turn it OFF.
+                        # If it is unchecked, pressing it will turn it ON.
+                        if obj.isChecked():
+                            # Special handling: Radio Buttons usually can't be turned off by clicking.
+                            if obj.inherits("QRadioButton") and obj.autoExclusive():
+                                self.sm.play("toggle_on") # Re-affirming 'ON'
+                            else:
+                                self.sm.play("toggle_off")
+                        else:
+                            self.sm.play("toggle_on")
+                    else:
+                        self.sm.play("click")
+            
+            elif obj.inherits("QSlider") and obj.isEnabled():
+                # Slider click (jump)
+                old_val = obj.value()
+                QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
+
+        # Check for Slider Dragging (Mouse Move while button pressed)
+        elif event.type() == QEvent.MouseMove:
+             if obj.inherits("QSlider") and obj.isEnabled():
+                 if event.buttons(): # If dragging
+                     old_val = obj.value()
+                     QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
+
+        # Check for Slider Scrolling
+        elif event.type() == QEvent.Wheel:
+             if obj.inherits("QSlider") and obj.isEnabled():
+                 old_val = obj.value()
+                 QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
+        
+        return super().eventFilter(obj, event)

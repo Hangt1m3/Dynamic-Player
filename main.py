@@ -4,6 +4,7 @@ import os
 import json
 import io
 import multiprocessing
+from services import ColorCache, GoveeController, SoundManager, GlobalSoundFilter
 from PIL import Image
 
 # --- FIXED IMPORTS ---
@@ -39,6 +40,12 @@ class SpotifyPlayer(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        # --- NEW: Global Sound Engine Setup ---
+        self.sound_manager = SoundManager(self)
+        self.sound_filter = GlobalSoundFilter(self.sound_manager)
+        # Install the filter on the global application instance so it catches EVERYTHING
+        QApplication.instance().installEventFilter(self.sound_filter)
+        # --------------------------------------
         self.setWindowOpacity(0.0)
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -677,15 +684,16 @@ class SpotifyPlayer(QMainWindow):
     @pyqtSlot(dict)
     def _on_windows_track_changed(self, data):
         # Only process if spotify is not the active source, or if Spotify is paused.
-        # This allows Windows media to take over when Spotify is paused.
+        # This allows Windows media (Apple Music/YouTube) to take over when Spotify is paused.
         if self.active_media_source != 'spotify' or self._is_paused:
             self.idle_timer.stop()
-            # Aspect ratio is now set after the fade-out to prevent a jarring switch.
-            self._current_track_duration = 0 # Disable progress for Windows for now
+            self._current_track_duration = 0 # Disable progress bar for generic media
             self.active_media_source = 'windows'
+            
             item = data["item"]
             thumbnail_data = data.get("thumbnail_data")
 
+            # Process the thumbnail
             pil_img = None
             if thumbnail_data:
                 try:
@@ -694,9 +702,18 @@ class SpotifyPlayer(QMainWindow):
                     pil_img = None
 
             if not pil_img:
+                # Fallback placeholder if no art is found
                 pil_img = Image.new("RGB", (640, 640), "black")
 
-            self._load_track_data(item, data["is_playing"], data["progress_ms"], preloaded_image=pil_img, aspect_ratio=16.0/9.0)
+            # Pass the constructed item (which now contains our synthetic hash IDs)
+            # This ensures _load_track_data looks up the correct "Album ID" in your cache.
+            self._load_track_data(
+                item, 
+                data["is_playing"], 
+                data["progress_ms"], 
+                preloaded_image=pil_img, 
+                aspect_ratio=1.0 # Keep square for music, change to 16:9 only if you detect video
+            )
 
     def _load_track_data(self, item, is_playing, progress_ms, preloaded_image=None, aspect_ratio=1.0):
         self._pending_track_data = None

@@ -5,22 +5,26 @@ import json
 import base64
 import io
 from PIL import Image
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPoint, QSize, QEvent, QBuffer, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QSettings, QProcess
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QWidget, QSizePolicy, QScrollArea, QCheckBox,
-                             QGroupBox, QFormLayout, QComboBox, QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, QTextBrowser, 
-                             QFrame, QColorDialog, QFileDialog, QTabWidget, QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit, QApplication, QAbstractButton)
-from PyQt5.QtGui import QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, QGuiApplication, QPixmap, QImage, QFontDatabase
+from PyQt5.QtCore import (Qt, pyqtSignal, QTimer, QRectF, QPoint, QSize, QEvent, QBuffer, 
+                          QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, 
+                          QSettings, QProcess, pyqtSlot, QDir, QThreadPool)
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QWidget, 
+                             QSizePolicy, QScrollArea, QCheckBox, QGroupBox, QFormLayout, 
+                             QComboBox, QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, 
+                             QTextBrowser, QFrame, QColorDialog, QFileDialog, QTabWidget, 
+                             QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit, 
+                             QApplication, QAbstractButton)
+from PyQt5.QtGui import (QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, 
+                         QGuiApplication, QPixmap, QImage)
+
 from ui.styles import get_common_stylesheet
-from ui.widgets import BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, NoScrollComboBox
-from .styles import get_common_stylesheet
-from .widgets import BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, NoScrollComboBox
+from ui.widgets import (BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, 
+                        NoScrollComboBox, FontFamilyDelegate, FontStyleDelegate)
 from ui.overlays import NotificationWidget
 from services import ColorCache
 from workers import GitHubUpdatesWorker, GoveeDeviceFinderWorker
 from utils import get_contrast_ratio, get_best_text_color, get_best_border_color, extract_palette_from_image
-from ui.widgets import BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, NoScrollComboBox, FontFamilyDelegate, FontStyleDelegate
 from config import SPOTIPY_REDIRECT_URI, GITHUB_TOKEN
-from PyQt5.QtCore import pyqtSlot, QDir, Qt, QSettings, QThreadPool
 
 class ThemedDialog(QDialog):
     # Copy the ThemedDialog implementation from original code
@@ -276,7 +280,7 @@ class ColorEditorDialog(QDialog):
 
     def __init__(self, album_art_pixmap, album_id, track_id, color_cache, parent = None, media_source = 'spotify'):
         super().__init__(parent, Qt.FramelessWindowHint | Qt.Tool)
-        self.setObjectName("ThemedDialog") # Use the same object name to get transparent background style
+        self.setObjectName("ThemedDialog") 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
 
@@ -423,8 +427,6 @@ class ColorEditorDialog(QDialog):
         self.initial_is_text_color_auto = self.is_text_color_auto
         self.initial_blob_colors = [QColor(c) for c in self.blob_colors]
         self.initial_shadow_enabled = shadow_enabled
-        # self.initial_font_family is already set
-        # self.initial_font_style is already set
         self.initial_title_case = title_case
         self.initial_artist_case = artist_case
         self.initial_text_border_enabled = text_border_enabled
@@ -467,7 +469,6 @@ class ColorEditorDialog(QDialog):
         self.loading_label.setStyleSheet(f"color: {self.ui_text_color.name()}; font-size: 18px; font-weight: bold;")
         loading_layout.addWidget(self.loading_label)
         self.main_layout.addWidget(self.loading_container)
-
 
         # Settings Container (Hidden initially)
         self.settings_container = QWidget()
@@ -740,16 +741,13 @@ class ColorEditorDialog(QDialog):
         self.default_font_family_combo = NoScrollComboBox()
         self.default_font_style_combo = NoScrollComboBox()
 
-        # --- NEW CODE: Apply Delegates for Global Settings ---
+        # --- Apply Delegates for Global Settings ---
         self.default_font_family_combo.setItemDelegate(FontFamilyDelegate(self.default_font_family_combo))
-        
         # Pass a lambda function so the style delegate can always find the CURRENT text of the family combo
         self.default_font_style_combo.setItemDelegate(
             FontStyleDelegate(lambda: self.default_font_family_combo.currentText(), self.default_font_style_combo)
         )
-        # -----------------------------------------------------
-
-
+        
         self.default_font_size_slider = QSlider(Qt.Horizontal); self.default_font_size_slider.setRange(50, 200); self.default_font_size_slider.setValue(self.initial_default_font_size_scale)
         self.default_font_size_label = self._create_dynamic_label(f"{self.initial_default_font_size_scale}%")
         self.default_font_size_slider.valueChanged.connect(lambda v: self.default_font_size_label.setText(f"{v}%"))
@@ -813,7 +811,6 @@ class ColorEditorDialog(QDialog):
         data_layout.addWidget(self.clear_cache_btn)
         global_layout.addWidget(data_group)
         
-
         global_layout.addStretch()
 
         yield # Yield after Tab 3 setup
@@ -950,14 +947,15 @@ class ColorEditorDialog(QDialog):
         self.font_style_combo.setToolTip("Select the style for the chosen font family.")
         self.font_style_combo.setEnabled(self.is_font_family_overridden)
         
-        # --- NEW: Apply Delegate to Theme Font Family ---
+        # --- Apply Delegate to Theme Font Family ---
         self.font_family_combo.setItemDelegate(FontFamilyDelegate(self.font_family_combo))
-        # ------------------------------------------------
-
+        
         self.font_style_combo = NoScrollComboBox()
         self.font_style_combo.setToolTip("Select the style for the chosen font family.")
         self.font_style_combo.setEnabled(self.is_font_family_overridden)
-
+        
+        # --- Apply Delegate to Theme Font Style ---
+        self.font_style_combo.setItemDelegate(FontStyleDelegate(lambda: self.font_family_combo.currentText(), self.font_style_combo))
 
         self.font_search_input = QLineEdit()
         self.font_search_input.setPlaceholderText("Search fonts...")
@@ -1380,12 +1378,6 @@ class ColorEditorDialog(QDialog):
         super(ColorEditorDialog, self).done(self._result_code)
 
     def animate_exit(self):
-        # Using Fade Slide Up effect for exit
-        duration = 300
-        current_pos = self.pos()
-        target_pos = QPoint(current_pos.x(), current_pos.y() - 30)
-
-    def animate_exit(self):
         anim_type = "Fade"
         anim_dir = "From Top"
         duration = 400
@@ -1419,21 +1411,18 @@ class ColorEditorDialog(QDialog):
 
     def fetch_updates(self):
         self.updates_browser.setHtml("<p style='color: #aaa;'>Loading updates from GitHub...</p>")
-        worker = GitHubUpdatesWorker("Hang1m3", "Dynamic-Player")
+        # Fixed definition of worker - assumed Hang1m3 with token is correct per context
         worker = GitHubUpdatesWorker("Hang1m3", "Dynamic-Player", token=GITHUB_TOKEN)
-        worker = GitHubUpdatesWorker("Hangt1m3", "Dynamic-Player", token=GITHUB_TOKEN)
         worker.signals.result.connect(self.display_updates)
-        worker.signals.error.connect(self.display_updates) # Display error as HTML too
+        worker.signals.error.connect(lambda e: self.display_updates(str(e))) 
         self.threadpool.start(worker)
 
-    def display_updates(self, html_content):
-        self.updates_browser.setHtml(html_content)
     def display_updates(self, data):
         if isinstance(data, list):
             self.commits_data = data
             self.render_updates()
         else:
-            self.updates_browser.setHtml(data)
+            self.updates_browser.setHtml(str(data))
 
     def render_updates(self):
         if not self.commits_data: return
@@ -2738,7 +2727,3 @@ class ColorEditorDialog(QDialog):
             if msg2.exec_() == QDialog.Accepted:
                 self.color_cache.clear()
                 ThemedMessageBox("Success", "Album cache has been cleared.", [("OK", QDialog.Accepted)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value()).exec_()
-
-        # --- NEW: Apply Delegate to Theme Font Style ---
-        self.font_style_combo.setItemDelegate(FontStyleDelegate(lambda: self.font_family_combo.currentText(), self.font_style_combo))
-        # -----------------------------------------------

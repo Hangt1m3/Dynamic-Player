@@ -17,8 +17,9 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('icon.ico', '.'), 
-        # ('fonts', 'fonts'),  <-- UNCOMMENT THIS LINE if you have a physical 'fonts' folder
+        ('icon.ico', '.'),
+        ('sounds', 'sounds'), # <--- ADDED THIS LINE: Bundles the sounds folder
+        # ('fonts', 'fonts'), # Uncomment if you have a physical fonts folder
     ],
     # 3. Combine the hidden imports
     hiddenimports=winsdk_hidden_imports + other_hidden_imports,
@@ -44,7 +45,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=False, # Set to True if you want to see error messages during testing
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

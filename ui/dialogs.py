@@ -1448,12 +1448,13 @@ class ColorEditorDialog(QDialog):
         else:
             self.updates_browser.setHtml(str(data))
 
+    # [UPDATE THIS METHOD]
     def render_updates(self):
         if not self.commits_data: return
         
-        # Extract version info if available from the worker result
+        # Use attributes set by display_updates, or fallback
         latest_version = getattr(self, "latest_version", "Unknown")
-        current_version = getattr(self, "current_version", "0.0.0") # You should pass this into the dialog or worker
+        current_version = getattr(self, "current_version", "Unknown")
         
         text_color = self.ui_text_color
         text_hex = text_color.name()
@@ -1466,7 +1467,7 @@ class ColorEditorDialog(QDialog):
         border_color.setAlpha(50)
         border_rgba = f"rgba({border_color.red()}, {border_color.green()}, {border_color.blue()}, {border_color.alpha()/255:.2f})"
 
-        # HTML Construction
+        # HTML Header
         html = f"""
         <html>
         <head>
@@ -1488,29 +1489,41 @@ class ColorEditorDialog(QDialog):
         <div class="header-box">
             <h2>System Updates</h2>
             <div class="version-info">
-                Current: v{current_version} &nbsp;&nbsp;|&nbsp;&nbsp; Latest: v{latest_version}
+                Current: v{current_version} &nbsp;&nbsp;|&nbsp;&nbsp; Latest: {latest_version}
             </div>
         </div>
         """
         
-        # If commits_data contains a 'body' key, it's a release, otherwise it's a list of commits
-        if isinstance(self.commits_data, dict) and 'body' in self.commits_data:
-             # Release notes format
-             body = self.commits_data.get('body', '').replace('\n', '<br>')
-             html += f"<div class='desc'>{body}</div>"
+        # Render Content based on type
+        if isinstance(self.commits_data, dict):
+            # Case 1: Official Release
+            if self.commits_data.get('type') == 'release':
+                 body = self.commits_data.get('body', '').replace('\n', '<br>')
+                 html += f"<div class='desc'>{body}</div>"
+            
+            # Case 2: Commits (Fallback)
+            elif self.commits_data.get('type') == 'commits':
+                html += "<h3>Latest Activity (Commit History)</h3>"
+                commits = self.commits_data.get('commits', [])
+                if not commits:
+                    html += "<div class='desc'>No recent commits found.</div>"
+                
+                for commit in commits:
+                    desc_text = commit['desc'].replace('\n', '<br>')
+                    desc_html = f"<div class='desc'>{desc_text}</div>" if commit['desc'] else ""
+                    html += f"""
+                    <div class='commit'>
+                        <div class='title'>{commit['title']}</div>
+                        <div class='meta'>{commit['date']} • {commit['author']}</div>
+                        {desc_html}
+                    </div>
+                    """
+        
+        # Legacy fallback (just in case)
         elif isinstance(self.commits_data, list):
-            # Commits list format
             html += "<h3>Latest Changes</h3>"
             for commit in self.commits_data:
-                desc_text = commit['desc'].replace('\n', '<br>')
-                desc_html = f"<div class='desc'>{desc_text}</div>" if commit['desc'] else ""
-                html += f"""
-                <div class='commit'>
-                    <div class='title'>{commit['title']}</div>
-                    <div class='meta'>{commit['date']} • {commit['author']}</div>
-                    {desc_html}
-                </div>
-                """
+                html += f"<div class='commit'><div class='title'>{commit.get('title','')}</div></div>"
                 
         html += "</body></html>"
         self.updates_browser.setHtml(html)

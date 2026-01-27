@@ -141,7 +141,6 @@ class GitHubUpdatesWorker(QRunnable):
     def run(self):
         try:
             import requests
-            # FIX: Use 'Bearer' instead of 'token' for fine-grained PATs
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
             # 1. Attempt to fetch the latest release
@@ -156,28 +155,42 @@ class GitHubUpdatesWorker(QRunnable):
                     "current_version": self.current_version,
                     "body": data.get("body") or "No release notes provided.",
                     "date": data.get("published_at", "")[:10],
-                    "author": data.get("author", {}).get("login", "Unknown")
+                    "author": data.get("author", {}).get("login", "Unknown"),
+                    "type": "release"
                 }
                 self.signals.result.emit(result)
             else:
-                # 2. Fallback: Try to fetch commits (common for private repos without releases)
+                # 2. Fallback: Fetch commits
                 commits_url = f"https://api.github.com/repos/{self.owner}/{self.repo}/commits?per_page=5"
                 c_response = requests.get(commits_url, headers=headers, timeout=10)
                 
                 if c_response.status_code == 200:
                     commits = c_response.json()
                     formatted_commits = []
-                    for c in commits:
-                        formatted_commits.append({
-                            "title": c.get("commit", {}).get("message", "").split('\n')[0],
-                            "desc": c.get("commit", {}).get("message", ""),
-                            "date": c.get("commit", {}).get("author", {}).get("date", "")[:10],
-                            "author": c.get("commit", {}).get("author", {}).get("name", "Unknown")
-                        })
-                    self.signals.result.emit(formatted_commits)
+                    latest_sha = "Unknown"
+                    
+                    if commits and isinstance(commits, list) and len(commits) > 0:
+                        # Use the short SHA of the newest commit as the "version"
+                        latest_sha = commits[0].get("sha", "Unknown")[:7]
+                        
+                        for c in commits:
+                            formatted_commits.append({
+                                "title": c.get("commit", {}).get("message", "").split('\n')[0],
+                                "desc": c.get("commit", {}).get("message", ""),
+                                "date": c.get("commit", {}).get("author", {}).get("date", "")[:10],
+                                "author": c.get("commit", {}).get("author", {}).get("name", "Unknown")
+                            })
+
+                    # Construct a result dict so the UI still gets version info
+                    result = {
+                        "latest_version": latest_sha, 
+                        "current_version": self.current_version,
+                        "commits": formatted_commits,
+                        "type": "commits"
+                    }
+                    self.signals.result.emit(result)
                 else:
-                    # If this fails, the token definitely doesn't have access
-                    self.signals.error.emit(f"Access Denied (Status: {response.status_code}). Check your Token permissions.")
+                    self.signals.error.emit(f"No releases or commits found (Status: {response.status_code})")
                     
         except Exception as e:
             self.signals.error.emit(str(e))

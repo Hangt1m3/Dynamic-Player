@@ -6,7 +6,7 @@ SPOTIFY_SCOPE = "user-read-playback-state user-read-currently-playing"
 SPOTIFY_GREEN = [29, 185, 84]
 GITHUB_OWNER = "Hangt1m3" 
 GITHUB_REPO = "Dynamic-Player"
-GITHUB_TOKEN = "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"
+GITHUB_TOKEN = "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"
 
 # --- NEW: App Version ---
 APP_VERSION = "1.1.0"

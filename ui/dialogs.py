@@ -489,6 +489,11 @@ class ColorEditorDialog(QDialog):
         except StopIteration:
             self._build_generator = None
 
+    def _on_tab_changed(self, index):
+        """Refreshes the theme browser whenever the user switches to that tab."""
+        if self.tab_widget.tabText(index) == "Saved Themes":
+            self.populate_theme_browser()
+
     def _install_filter_recursive(self, widget):
         """Installs the border event filter on the widget and all its children."""
         if isinstance(widget, (QLabel, QAbstractButton, QGroupBox)):
@@ -526,7 +531,11 @@ class ColorEditorDialog(QDialog):
         settings_container_layout.setContentsMargins(0,0,0,0)
 
         self.tab_widget = QTabWidget()
-        # Create a placeholder for the disabled info label, to be managed by load_track_state
+        
+        # --- NEW: Connect the tab change signal here ---
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        
+        # Create a placeholder for the disabled info label...
         self.disabled_info_label = QLabel("Theme and color editing is only available for tracks played via Spotify.")
         self.disabled_info_label.setWordWrap(True)
         self.disabled_info_label.setStyleSheet("font-style: italic; color: #999; padding-bottom: 10px;")
@@ -2276,18 +2285,88 @@ class ColorEditorDialog(QDialog):
         card = QFrame()
         card.setFixedSize(220, 140) 
         
-        # Extract colors
-        bg_rgb = data.get("player_bg_color")
-        if not bg_rgb and "ui_palette" in data and data["ui_palette"]:
-            bg_rgb = data["ui_palette"][0]
+        # --- Helper to safely ensure integer lists for QColor ---
+        def safe_rgb(val):
+            if not val or not isinstance(val, (list, tuple)) or len(val) < 3: return None
+            return [int(c) for c in val[:3]]
+
+        # --- 1. Background & Gradient Logic ---
+        bg_rgb = safe_rgb(data.get("player_bg_color"))
+        if not bg_rgb and "ui_palette" in data:
+            bg_rgb = safe_rgb(data["ui_palette"][0])
         
-        text_rgb = data.get("text_color")
-        if not text_rgb: text_rgb = [255, 255, 255]
+        # Fallback
+        if not bg_rgb: bg_rgb = [40, 40, 40]
+        bg_color = QColor(*bg_rgb)
+
+        blob_palette = data.get("blob_palette", [])
         
-        bg_color = QColor(*bg_rgb) if bg_rgb else QColor(40, 40, 40)
-        text_color = QColor(*text_rgb)
+        # Construct Background Style (Diagonal Gradient)
+        if blob_palette and len(blob_palette) > 0:
+            blob_rgb = safe_rgb(blob_palette[0])
+            if blob_rgb:
+                blob_col = QColor(*blob_rgb)
+                # Diagonal gradient from top-left (BG) to bottom-right (Blob Color)
+                bg_style = f"qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 {bg_color.name()}, stop:1 {blob_col.name()})"
+            else:
+                bg_style = bg_color.name()
+        else:
+            bg_style = bg_color.name()
+
+        # --- 2. Text Color Logic ---
+        text_rgb = safe_rgb(data.get("text_color"))
         
-        # Logic to check completeness
+        if text_rgb:
+            # If saved, use it
+            text_color = QColor(*text_rgb)
+        else:
+            # Auto-Calculate
+            try:
+                # Find accent for contrast calculation
+                accent_rgb = [100, 100, 100]
+                if "ui_palette" in data and len(data["ui_palette"]) > 1:
+                    accent_rgb = safe_rgb(data["ui_palette"][1]) or accent_rgb
+                
+                # Use util to get best color (ensure inputs are ints)
+                auto_rgb = get_best_text_color(bg_rgb, accent_rgb)
+                text_color = QColor(*safe_rgb(auto_rgb))
+            except Exception as e:
+                # Fallback to white if calculation fails, but log it
+                print(f"Theme Card Error ({album_id}): {e}")
+                text_color = QColor(255, 255, 255)
+
+        # --- 3. Border Logic ---
+        border_width = "2px"
+        border_color_q = None
+        
+        # Priority 1: Saved Text Border
+        if data.get("text_border_enabled"):
+            tb_rgb = safe_rgb(data.get("text_border_color"))
+            if tb_rgb:
+                border_color_q = QColor(*tb_rgb)
+        
+        # Priority 2: Album Accent
+        if not border_color_q:
+            if "ui_palette" in data and len(data["ui_palette"]) > 1:
+                accent = safe_rgb(data["ui_palette"][1])
+                if accent: border_color_q = QColor(*accent)
+        
+        # Priority 3: Subtle Text Color Fallback
+        if not border_color_q:
+            border_color_q = QColor(text_color)
+            border_color_q.setAlpha(100)
+
+        # Ensure alpha is handled correctly for stylesheet
+        border_rgba = f"rgba({border_color_q.red()}, {border_color_q.green()}, {border_color_q.blue()}, {border_color_q.alpha()/255:.2f})"
+
+        # --- 4. Metadata ---
+        album_name = data.get("meta_album", "Unknown Album")
+        artist_name = data.get("meta_artist", "Unknown Artist")
+        
+        # Legacy fallback
+        if "meta_album" not in data:
+            album_name = f"ID: {album_id[:8]}"
+
         has_blobs = "blob_palette" in data
         has_lights = "lights_config" in data and data["lights_config"].get("mode") == "custom"
         is_partial = "player_bg_color" not in data
@@ -2295,21 +2374,12 @@ class ColorEditorDialog(QDialog):
         status_text = "Full Theme"
         if is_partial: status_text = "Partial Save"
         elif has_blobs and has_lights: status_text = "Full Theme + Lights"
-        
-        # Metadata
-        album_name = data.get("meta_album", "Unknown Album")
-        artist_name = data.get("meta_artist", "Unknown Artist")
-        
-        if "meta_album" not in data:
-            # Fallback for old saves
-            album_name = f"ID: {album_id[:8]}"
 
-        # Stylesheet
-        # We use rgba for the border to be subtle
+        # --- 5. Stylesheet ---
         card.setStyleSheet(f"""
             QFrame {{
-                background-color: {bg_color.name()};
-                border: 1px solid rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 80);
+                background: {bg_style};
+                border: {border_width} solid {border_rgba};
                 border-radius: 12px;
             }}
             QLabel {{ 
@@ -2335,7 +2405,7 @@ class ColorEditorDialog(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(2)
         
-        # Album Name (Top, centered, bold)
+        # Album Name
         album_lbl = QLabel(album_name)
         album_lbl.setAlignment(Qt.AlignCenter)
         album_lbl.setWordWrap(True)
@@ -2345,37 +2415,44 @@ class ColorEditorDialog(QDialog):
         album_lbl.setFont(f)
         layout.addWidget(album_lbl, 1) 
         
-        # Artist Name (Below album, centered, slightly transparent)
+        # Artist Name
         artist_lbl = QLabel(artist_name)
         artist_lbl.setAlignment(Qt.AlignCenter)
         artist_lbl.setWordWrap(True)
         f2 = artist_lbl.font()
         f2.setPointSize(8)
         artist_lbl.setFont(f2)
-        # Manually set opacity via stylesheet for just this label
-        artist_lbl.setStyleSheet(f"color: rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 180);")
+        
+        # Calculate artist opacity color
+        artist_text_col = QColor(text_color)
+        artist_text_col.setAlpha(180)
+        artist_rgba = f"rgba({artist_text_col.red()}, {artist_text_col.green()}, {artist_text_col.blue()}, {artist_text_col.alpha()/255:.2f})"
+        artist_lbl.setStyleSheet(f"color: {artist_rgba};")
         layout.addWidget(artist_lbl, 0)
         
-        # Status Text (Small, italic)
+        # Status Label
         status_lbl = QLabel(status_text)
         status_lbl.setAlignment(Qt.AlignCenter)
         f3 = status_lbl.font()
         f3.setItalic(True)
         f3.setPointSize(7)
         status_lbl.setFont(f3)
-        status_lbl.setStyleSheet(f"color: rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 120);")
+        
+        status_col = QColor(text_color)
+        status_col.setAlpha(120)
+        status_rgba = f"rgba({status_col.red()}, {status_col.green()}, {status_col.blue()}, {status_col.alpha()/255:.2f})"
+        status_lbl.setStyleSheet(f"color: {status_rgba};")
         layout.addWidget(status_lbl, 0)
         
         layout.addSpacing(6)
         
-        # Delete Button (Centered, no stretching to avoid clipping)
+        # Delete Button
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0,0,0,0)
-        # Use addStretch on both sides to perfectly center
         btn_layout.addStretch()
         
         del_btn = QPushButton("Delete")
-        del_btn.setFixedSize(70, 24) # Fixed size ensures it fits
+        del_btn.setFixedSize(70, 24)
         del_btn.setCursor(Qt.PointingHandCursor)
         del_btn.clicked.connect(lambda: self.delete_theme(album_id))
         

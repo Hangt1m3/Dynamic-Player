@@ -126,57 +126,61 @@ class TrackLoaderWorker(QRunnable):
         finally: self.signals.finished.emit()
 
 class GitHubUpdatesWorker(QRunnable):
-    class Signals(QObject): result = pyqtSignal(dict); error = pyqtSignal(str) 
-    def __init__(self, owner, repo, token=None, current_version="0.0.0"): 
-        super().__init__()
+    class Signals(QObject):
+        result = pyqtSignal(object)
+        error = pyqtSignal(str)
+
+    def __init__(self, owner, repo, token=None, current_version="0.0.0"):
+        super(GitHubUpdatesWorker, self).__init__()
         self.owner = owner
         self.repo = repo
         self.token = token
         self.current_version = current_version
         self.signals = self.Signals()
 
-    @pyqtSlot()
     def run(self):
-        # Fetch the LATEST RELEASE instead of just commits
-        url = f"https://api.github.com/repos/{self.owner}/{self.repo}/releases/latest"
-        headers = {}
-        if self.token: headers["Authorization"] = f"Bearer {self.token}"
-        
         try:
+            import requests
+            # FIX: Use 'Bearer' instead of 'token' for fine-grained PATs
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            # 1. Attempt to fetch the latest release
+            url = f"https://api.github.com/repos/{self.owner}/{self.repo}/releases/latest"
+            
             response = requests.get(url, headers=headers, timeout=10)
             
-            # Handle case where no releases exist yet
-            if response.status_code == 404:
-                self.signals.result.emit({
-                    "update_available": False,
-                    "latest_version": self.current_version,
-                    "body": "No official releases found.",
-                    "url": ""
-                })
-                return
-
-            response.raise_for_status()
-            release_data = response.json()
-            
-            # Strip 'v' if present (e.g. v1.0.0 -> 1.0.0)
-            latest_tag = release_data.get("tag_name", "0.0.0").lstrip("v")
-            html_url = release_data.get("html_url", "")
-            body = release_data.get("body", "")
-
-            # Simple string comparison (for now). 
-            # If they differ, we assume it's an update.
-            update_available = latest_tag != self.current_version
-
-            self.signals.result.emit({
-                "update_available": update_available,
-                "latest_version": latest_tag,
-                "current_version": self.current_version,
-                "body": body,
-                "url": html_url
-            })
-
-        except Exception as e: 
-            self.signals.error.emit(f"Could not check for updates: {str(e)}")
+            if response.status_code == 200:
+                data = response.json()
+                result = {
+                    "latest_version": data.get("tag_name", "Unknown"),
+                    "current_version": self.current_version,
+                    "body": data.get("body") or "No release notes provided.",
+                    "date": data.get("published_at", "")[:10],
+                    "author": data.get("author", {}).get("login", "Unknown")
+                }
+                self.signals.result.emit(result)
+            else:
+                # 2. Fallback: Try to fetch commits (common for private repos without releases)
+                commits_url = f"https://api.github.com/repos/{self.owner}/{self.repo}/commits?per_page=5"
+                c_response = requests.get(commits_url, headers=headers, timeout=10)
+                
+                if c_response.status_code == 200:
+                    commits = c_response.json()
+                    formatted_commits = []
+                    for c in commits:
+                        formatted_commits.append({
+                            "title": c.get("commit", {}).get("message", "").split('\n')[0],
+                            "desc": c.get("commit", {}).get("message", ""),
+                            "date": c.get("commit", {}).get("author", {}).get("date", "")[:10],
+                            "author": c.get("commit", {}).get("author", {}).get("name", "Unknown")
+                        })
+                    self.signals.result.emit(formatted_commits)
+                else:
+                    # If this fails, the token definitely doesn't have access
+                    self.signals.error.emit(f"Access Denied (Status: {response.status_code}). Check your Token permissions.")
+                    
+        except Exception as e:
+            self.signals.error.emit(str(e))
 
 class SpotifyPollingWorker(QRunnable):
     class Signals(QObject): track_changed = pyqtSignal(dict); playback_state_changed = pyqtSignal(dict); no_playback = pyqtSignal()

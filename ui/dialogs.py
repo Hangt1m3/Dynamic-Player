@@ -815,6 +815,8 @@ class ColorEditorDialog(QDialog):
 
         yield # Yield after Tab 3 setup
 
+        yield from self._setup_theme_browser_tab()
+
         # --- Tab 4: API & Devices ---
         credentials_tab = QWidget()
         credentials_tab_layout = QVBoxLayout(credentials_tab)
@@ -1210,6 +1212,11 @@ class ColorEditorDialog(QDialog):
         self.quick_save_btn.setToolTip("Save changed settings immediately.")
         self.quick_save_btn.clicked.connect(lambda: self.save_and_close(quick=True))
         
+        # --- NEW BUTTON: Save Full Theme ---
+        self.save_full_theme_btn = QPushButton("Save Theme")
+        self.save_full_theme_btn.setToolTip("Save the current look as a fixed theme (snapshots all colors and settings).")
+        self.save_full_theme_btn.clicked.connect(self.save_full_theme)
+        
         self.save_button = QPushButton("Save...")
         self.save_button.setDefault(True)
         self.save_button.setToolTip("Choose which settings to save.")
@@ -1217,6 +1224,7 @@ class ColorEditorDialog(QDialog):
         
         self.cancel_button = QPushButton("Cancel")
         action_layout.addWidget(self.quick_save_btn)
+        action_layout.addWidget(self.save_full_theme_btn) # Added here
         action_layout.addWidget(self.save_button)
         action_layout.addWidget(self.cancel_button)
         self.layout().addLayout(action_layout)
@@ -1288,35 +1296,45 @@ class ColorEditorDialog(QDialog):
 
     def _adjust_window_size(self):
         max_w = 800
+        # Default height start
         max_h = 600
         
-        # Iterate tabs to find max content size
+        # Iterate tabs to find max content size, BUT skip the 'Saved Themes' grid 
+        # because it can get infinitely long. We want that one to scroll.
         for i in range(self.tab_widget.count()):
             page = self.tab_widget.widget(i)
+            label = self.tab_widget.tabText(i)
+            
+            # Skip calculating height based on the Saved Themes tab
+            if label == "Saved Themes":
+                continue
+
             scroll_area = page.findChild(QScrollArea)
             if scroll_area:
                 content = scroll_area.widget()
                 if content:
                     content.adjustSize()
                     size = content.sizeHint()
+                    # We still check width to ensure it's wide enough
                     max_w = max(max_w, size.width() + 50)
+                    # We check height for other tabs to ensure they fit
                     max_h = max(max_h, size.height() + 50)
 
-        # Add chrome margins (tabs, window frame, buttons)
+        # Add chrome margins
         max_w += 40 
         max_h += 120 
 
-        # Clamp to screen
+        # Clamp to screen size
         screen = QApplication.primaryScreen()
         if self.parent() and self.parent().windowHandle():
             screen = self.parent().windowHandle().screen()
         avail = screen.availableGeometry()
         
-        final_w = min(max_w, int(avail.width() * 0.95))
-        final_h = min(max_h, int(avail.height() * 0.95))
+        final_w = min(max_w, int(avail.width() * 0.9))
+        final_h = min(max_h, int(avail.height() * 0.85)) # Slightly smaller height cap
         
         self.resize(final_w, final_h)
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(800, 500)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1410,15 +1428,21 @@ class ColorEditorDialog(QDialog):
         self.exit_anim_group.start()
 
     def fetch_updates(self):
+        from config import APP_VERSION # Import here to avoid circular imports if any
         self.updates_browser.setHtml("<p style='color: #aaa;'>Loading updates from GitHub...</p>")
-        # Fixed definition of worker - assumed Hang1m3 with token is correct per context
-        worker = GitHubUpdatesWorker("Hang1m3", "Dynamic-Player", token=GITHUB_TOKEN)
+        worker = GitHubUpdatesWorker("Hangt1m3", "Dynamic-Player", token=GITHUB_TOKEN, current_version=APP_VERSION)
         worker.signals.result.connect(self.display_updates)
         worker.signals.error.connect(lambda e: self.display_updates(str(e))) 
         self.threadpool.start(worker)
 
     def display_updates(self, data):
-        if isinstance(data, list):
+        if isinstance(data, dict):
+            # Result from GitHubUpdatesWorker
+            self.commits_data = data # Store the whole dict
+            self.latest_version = data.get("latest_version", "?.?.?")
+            self.current_version = data.get("current_version", "?.?.?")
+            self.render_updates()
+        elif isinstance(data, list):
             self.commits_data = data
             self.render_updates()
         else:
@@ -1426,6 +1450,11 @@ class ColorEditorDialog(QDialog):
 
     def render_updates(self):
         if not self.commits_data: return
+        
+        # Extract version info if available from the worker result
+        latest_version = getattr(self, "latest_version", "Unknown")
+        current_version = getattr(self, "current_version", "0.0.0") # You should pass this into the dialog or worker
+        
         text_color = self.ui_text_color
         text_hex = text_color.name()
         
@@ -1437,12 +1466,18 @@ class ColorEditorDialog(QDialog):
         border_color.setAlpha(50)
         border_rgba = f"rgba({border_color.red()}, {border_color.green()}, {border_color.blue()}, {border_color.alpha()/255:.2f})"
 
+        # HTML Construction
         html = f"""
         <html>
         <head>
         <style>
             body {{ font-family: 'Segoe UI', sans-serif; margin: 20px; }}
-            h2 {{ color: {text_hex}; margin-bottom: 25px; }}
+            .header-box {{ 
+                border-bottom: 2px solid {text_hex}; 
+                padding-bottom: 15px; margin-bottom: 20px; 
+            }}
+            h2 {{ color: {text_hex}; margin: 0; padding-bottom: 5px; }}
+            .version-info {{ font-size: 14px; color: {dim_rgba}; font-weight: bold; }}
             .commit {{ margin-bottom: 25px; border-bottom: 1px solid {border_rgba}; padding-bottom: 20px; }}
             .title {{ font-size: 15px; font-weight: bold; color: {text_hex}; margin-bottom: 5px; }}
             .meta {{ font-size: 12px; color: {dim_rgba}; margin-bottom: 10px; }}
@@ -1450,18 +1485,33 @@ class ColorEditorDialog(QDialog):
         </style>
         </head>
         <body>
-        <h2>Latest Changes</h2>
-        """
-        for commit in self.commits_data:
-            desc_text = commit['desc'].replace('\n', '<br>')
-            desc_html = f"<div class='desc'>{desc_text}</div>" if commit['desc'] else ""
-            html += f"""
-            <div class='commit'>
-                <div class='title'>{commit['title']}</div>
-                <div class='meta'>{commit['date']} • {commit['author']}</div>
-                {desc_html}
+        <div class="header-box">
+            <h2>System Updates</h2>
+            <div class="version-info">
+                Current: v{current_version} &nbsp;&nbsp;|&nbsp;&nbsp; Latest: v{latest_version}
             </div>
-            """
+        </div>
+        """
+        
+        # If commits_data contains a 'body' key, it's a release, otherwise it's a list of commits
+        if isinstance(self.commits_data, dict) and 'body' in self.commits_data:
+             # Release notes format
+             body = self.commits_data.get('body', '').replace('\n', '<br>')
+             html += f"<div class='desc'>{body}</div>"
+        elif isinstance(self.commits_data, list):
+            # Commits list format
+            html += "<h3>Latest Changes</h3>"
+            for commit in self.commits_data:
+                desc_text = commit['desc'].replace('\n', '<br>')
+                desc_html = f"<div class='desc'>{desc_text}</div>" if commit['desc'] else ""
+                html += f"""
+                <div class='commit'>
+                    <div class='title'>{commit['title']}</div>
+                    <div class='meta'>{commit['date']} • {commit['author']}</div>
+                    {desc_html}
+                </div>
+                """
+                
         html += "</body></html>"
         self.updates_browser.setHtml(html)
 
@@ -2063,12 +2113,14 @@ class ColorEditorDialog(QDialog):
             "base_font_families": self.base_font_families
         })
 
-    def start_content_fade_and_reload(self, album_id, track_id, album_art_pixmap):
+    def start_content_fade_and_reload(self, album_id, track_id, album_art_pixmap, album_name="", artist_name=""):
         """Fades the dialog out, reloads the content for the new track, and fades it back in."""
         self._pending_reload_data = {
             "album_id": album_id,
             "track_id": track_id,
-            "album_art_pixmap": album_art_pixmap
+            "album_art_pixmap": album_art_pixmap,
+            "album_name": album_name,
+            "artist_name": artist_name
         }
         
         # Stop any current fade and start a new fade-out from the current opacity.
@@ -2093,7 +2145,9 @@ class ColorEditorDialog(QDialog):
             data["album_id"],
             data["track_id"],
             data["album_art_pixmap"],
-            animate=False # We are handling our own animation
+            animate=False,
+            album_name=data.get("album_name", ""),
+            artist_name=data.get("artist_name", "")
         )
 
         # Fade back in
@@ -2132,10 +2186,202 @@ class ColorEditorDialog(QDialog):
         self.update_previews()
         self.update_stylesheet()
 
-    def load_track_state(self, album_id, track_id, album_art_pixmap, animate=True):
+    def _setup_theme_browser_tab(self):
+        browser_tab = QWidget()
+        browser_layout = QVBoxLayout(browser_tab)
+        browser_layout.setContentsMargins(0, 0, 5, 0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        self.browser_content = QWidget()
+        
+        # --- FIX: Directly assign QGridLayout (removed the conflicting QHBoxLayout line) ---
+        from PyQt5.QtWidgets import QGridLayout
+        self.browser_grid = QGridLayout(self.browser_content)
+        self.browser_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.browser_grid.setSpacing(15)
+        
+        scroll_area.setWidget(self.browser_content)
+        browser_layout.addWidget(scroll_area)
+        
+        # Refresh Button
+        refresh_btn = QPushButton("Refresh Saved Themes")
+        refresh_btn.clicked.connect(self.populate_theme_browser)
+        browser_layout.addWidget(refresh_btn)
+
+        self.tab_widget.addTab(browser_tab, "Saved Themes")
+        
+        # Initial Population
+        self.populate_theme_browser()
+        
+        yield
+
+    def populate_theme_browser(self):
+        # Clear existing layout
+        while self.browser_grid.count():
+            item = self.browser_grid.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        # Get cache
+        cache = self.color_cache.cache
+        row, col = 0, 0
+        max_cols = 3
+        
+        found_any = False
+        
+        for album_id, data in cache.items():
+            if not isinstance(data, dict): continue
+            
+            # Simple check to see if this is a "real" saved theme with IDs we can display
+            # Note: The cache might store track_ids or album_ids. 
+            # We try to deduce a displayable name. If the cache doesn't store name/artist, 
+            # we might display the ID or "Unknown Album".
+            # *However*, the WindowsMediaWorker now generates IDs based on Name+Artist.
+            # But the cache key is just the hash. The cache VALUE stores settings.
+            # If your cache doesn't store the Title/Artist strings, we can't display them 
+            # unless we add them to the save logic. 
+            # *Assumption*: We will show the ID or a placeholder, OR we assume the user 
+            # has visited these and we want to show visual settings.
+            
+            card = self.create_theme_card(album_id, data)
+            self.browser_grid.addWidget(card, row, col)
+            
+            found_any = True
+            col += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
+        
+        if not found_any:
+            lbl = QLabel("No saved themes found.")
+            lbl.setStyleSheet(f"color: {self.ui_text_color.name()}; font-style: italic;")
+            self.browser_grid.addWidget(lbl, 0, 0)
+
+    def create_theme_card(self, album_id, data):
+        card = QFrame()
+        card.setFixedSize(220, 140) 
+        
+        # Extract colors
+        bg_rgb = data.get("player_bg_color")
+        if not bg_rgb and "ui_palette" in data and data["ui_palette"]:
+            bg_rgb = data["ui_palette"][0]
+        
+        text_rgb = data.get("text_color")
+        if not text_rgb: text_rgb = [255, 255, 255]
+        
+        bg_color = QColor(*bg_rgb) if bg_rgb else QColor(40, 40, 40)
+        text_color = QColor(*text_rgb)
+        
+        # Logic to check completeness
+        has_blobs = "blob_palette" in data
+        has_lights = "lights_config" in data and data["lights_config"].get("mode") == "custom"
+        is_partial = "player_bg_color" not in data
+        
+        status_text = "Full Theme"
+        if is_partial: status_text = "Partial Save"
+        elif has_blobs and has_lights: status_text = "Full Theme + Lights"
+        
+        # Metadata
+        album_name = data.get("meta_album", "Unknown Album")
+        artist_name = data.get("meta_artist", "Unknown Artist")
+        
+        if "meta_album" not in data:
+            # Fallback for old saves
+            album_name = f"ID: {album_id[:8]}"
+
+        # Stylesheet
+        # We use rgba for the border to be subtle
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color.name()};
+                border: 1px solid rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 80);
+                border-radius: 12px;
+            }}
+            QLabel {{ 
+                border: none; 
+                background: transparent; 
+                color: {text_color.name()}; 
+            }}
+            QPushButton {{
+                background-color: rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 40);
+                color: {text_color.name()};
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 4px 10px;
+            }}
+            QPushButton:hover {{
+                background-color: {text_color.name()};
+                color: {bg_color.name()};
+            }}
+        """)
+        
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(2)
+        
+        # Album Name (Top, centered, bold)
+        album_lbl = QLabel(album_name)
+        album_lbl.setAlignment(Qt.AlignCenter)
+        album_lbl.setWordWrap(True)
+        f = album_lbl.font()
+        f.setBold(True)
+        f.setPointSize(10)
+        album_lbl.setFont(f)
+        layout.addWidget(album_lbl, 1) 
+        
+        # Artist Name (Below album, centered, slightly transparent)
+        artist_lbl = QLabel(artist_name)
+        artist_lbl.setAlignment(Qt.AlignCenter)
+        artist_lbl.setWordWrap(True)
+        f2 = artist_lbl.font()
+        f2.setPointSize(8)
+        artist_lbl.setFont(f2)
+        # Manually set opacity via stylesheet for just this label
+        artist_lbl.setStyleSheet(f"color: rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 180);")
+        layout.addWidget(artist_lbl, 0)
+        
+        # Status Text (Small, italic)
+        status_lbl = QLabel(status_text)
+        status_lbl.setAlignment(Qt.AlignCenter)
+        f3 = status_lbl.font()
+        f3.setItalic(True)
+        f3.setPointSize(7)
+        status_lbl.setFont(f3)
+        status_lbl.setStyleSheet(f"color: rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 120);")
+        layout.addWidget(status_lbl, 0)
+        
+        layout.addSpacing(6)
+        
+        # Delete Button (Centered, no stretching to avoid clipping)
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0,0,0,0)
+        # Use addStretch on both sides to perfectly center
+        btn_layout.addStretch()
+        
+        del_btn = QPushButton("Delete")
+        del_btn.setFixedSize(70, 24) # Fixed size ensures it fits
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.clicked.connect(lambda: self.delete_theme(album_id))
+        
+        btn_layout.addWidget(del_btn)
+        btn_layout.addStretch()
+        
+        layout.addLayout(btn_layout)
+        
+        return card
+
+    # [ADD THIS NEW METHOD]
+    def delete_theme(self, album_id):
+        self.color_cache.set_album_data(album_id, None) # None deletes it
+        self.populate_theme_browser()
+
+    def load_track_state(self, album_id, track_id, album_art_pixmap, animate=True, album_name="", artist_name=""):
         self._loading_state = True
         
-        # Block signals to prevent unnecessary updates during load
+        # Block signals
         self.font_family_combo.blockSignals(True)
         self.font_style_combo.blockSignals(True)
         self.shadow_checkbox.blockSignals(True)
@@ -2148,11 +2394,26 @@ class ColorEditorDialog(QDialog):
             self.track_id = track_id
             self.current_art_pixmap = album_art_pixmap
             
+            # Store Metadata
+            self.current_album_name = album_name
+            self.current_artist_name = artist_name
+            
             # Reload cache data
             track_cache = self.color_cache.get_album_data(self.track_id) or {}
             cached_data = track_cache or self.color_cache.get_album_data(self.album_id) or {}
             if isinstance(cached_data, list): cached_data = {"ui_palette": cached_data}
             self.cached_data = cached_data
+
+            # --- AUTO-UPDATE OLD SAVES ---
+            # If we found data (it's a saved theme) BUT it's missing metadata, update it now.
+            if self.cached_data and "meta_album" not in self.cached_data and self.current_album_name:
+                print(f"Updating legacy save for {self.album_id} with metadata: {self.current_album_name}")
+                self.cached_data['meta_album'] = self.current_album_name
+                self.cached_data['meta_artist'] = self.current_artist_name
+                self.color_cache.set_album_data(self.album_id, self.cached_data)
+                # Refresh browser if it's already built
+                if hasattr(self, 'browser_grid'):
+                    self.populate_theme_browser()
             
             main_window_state = self.parent()
             
@@ -2515,6 +2776,81 @@ class ColorEditorDialog(QDialog):
             self.govee_device_table.setItem(row, 1, QTableWidgetItem(device_config.get("device", ""))); self.govee_device_table.setItem(row, 2, QTableWidgetItem(device_config.get("model", ""))); self.govee_device_table.setItem(row, 3, QTableWidgetItem(device_config.get("name", "")))
         self.govee_device_table.resizeColumnsToContents()
 
+    def save_full_theme(self):
+        """Snapshots the exact current state of the panel and saves it as the theme."""
+        
+        # Build configuration from CURRENT UI state (ignoring "auto" flags)
+        album_config = {}
+
+        # 1. Colors & Palette
+        album_config["player_bg_color"] = list(self.ui_bg_color.getRgb()[:3])
+        album_config["ui_palette"] = [
+            list(self.ui_bg_color.getRgb()[:3]),
+            list(self.ui_accent_color.getRgb()[:3])
+        ]
+        album_config["text_color"] = list(self.ui_text_color.getRgb()[:3])
+        album_config["blob_palette"] = [list(c.getRgb()[:3]) for c in self.blob_colors]
+
+        # 2. Typography
+        album_config["shadow_enabled"] = self.shadow_checkbox.isChecked()
+        
+        # We save the text currently displayed in the combo boxes. 
+        # On the next load, the loader will see these values and automatically 
+        # check "Override" because a specific value is saved.
+        album_config["font_family"] = self.font_family_combo.currentText()
+        album_config["font_style"] = self.font_style_combo.currentText()
+        album_config["font_size_scale"] = self.font_size_slider.value()
+
+        # 3. Text Border
+        album_config["text_border_enabled"] = self.text_border_checkbox.isChecked()
+        album_config["text_border_color"] = list(self.text_border_color.getRgb()[:3])
+        album_config["text_border_size"] = self.text_border_size_slider.value()
+        
+        # 4. Casing
+        album_config["title_case"] = self._get_selected_case(self.title_case_radios)
+        album_config["artist_case"] = self._get_selected_case(self.artist_case_radios)
+
+        # 5. Interface
+        album_config["progress_bar_enabled"] = self.progress_bar_checkbox.isChecked()
+
+        # 6. Lights
+        current_lights_palette = [list(p["color"].getRgb()[:3]) for p in self.govee_color_pickers]
+        album_config["lights_config"] = {
+            "mode": "custom",
+            "palette": current_lights_palette
+        }
+        # Save brightness value (converting from slider 0-100 to float 0.0-1.0)
+        album_config["govee_brightness"] = self.govee_brightness_slider.value() / 100.0
+
+        # 7. Metadata (Crucial for the browser tab)
+        if hasattr(self, 'current_album_name') and self.current_album_name:
+            album_config['meta_album'] = self.current_album_name
+        if hasattr(self, 'current_artist_name') and self.current_artist_name:
+            album_config['meta_artist'] = self.current_artist_name
+
+        # 8. Save to Cache
+        self.color_cache.set_album_data(self.album_id, album_config)
+        
+        # 9. Handle Custom Art (Separate key)
+        if self.custom_art_b64:
+            track_config = self.color_cache.get_album_data(self.track_id) or {}
+            track_config["custom_art_b64"] = self.custom_art_b64
+            self.color_cache.set_album_data(self.track_id, track_config)
+
+        # 10. Apply Immediate Side Effects (Blob Density)
+        slider_value = self.blob_amount_slider.value()
+        if self.parent():
+            self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
+
+        # 11. Notify & Refresh
+        self.config_saved.emit(self.album_id, album_config)
+        
+        if hasattr(self, 'browser_grid'):
+            self.populate_theme_browser()
+            
+        # Close the dialog to indicate success
+        self.accept()
+
     def save_and_close(self, quick=False):
         # 1. Collect all changes from UI controls
         global_changes = self._get_global_changes()        
@@ -2524,66 +2860,66 @@ class ColorEditorDialog(QDialog):
         
         all_changes = global_changes + theme_changes
         
-        # 2. Determine exactly which keys to save
+        # 2. Determine keys to save
         keys_to_save = []
         if quick:
-            # Quick Save: Automatically select all items that have changed
             keys_to_save = [item['key'] for item in all_changes if item['changed']]
         else:
-            # Standard Save: Prompt user if there are changes
             if not all_changes:
                 self.accept()
                 return
-
             dialog = SaveConfirmationDialog(all_changes, self.ui_bg_color, self.ui_accent_color, self.ui_text_color, self)
             if dialog.exec_() == QDialog.Accepted:
                 keys_to_save = dialog.selected_keys
             else:
-                return # Cancelled by user, keep dialog open
+                return 
 
-        # 3. Save Global Settings to Registry/Config
+        # 3. Save Global Settings
         settings = QSettings("SpotifySync", "App")
         for item in global_changes:
             if item['key'] in keys_to_save:
                 val = item['value']
-                if isinstance(val, bool):
-                    settings.setValue(item['key'], "true" if val else "false")
-                else:
-                    settings.setValue(item['key'], val)
+                if isinstance(val, bool): settings.setValue(item['key'], "true" if val else "false")
+                else: settings.setValue(item['key'], val)
 
-        # 4. Save Theme Settings to Cache
+        # 4. Save Theme Settings
         if self.media_source == 'spotify':
-            # Start with existing cache to preserve settings we aren't touching
             album_config = self.cached_data.copy()
             theme_keys_processed = False
             
             for item in theme_changes:
                 if item['key'] in keys_to_save:
                     theme_keys_processed = True
-                    # If value is the special remove marker, delete from cache (reverting to auto)
                     if item['value'] == "__REMOVE__":
                         album_config.pop(item['key'], None)
                     else:
                         album_config[item['key']] = item['value']
             
-            # Apply updates to cache
-            if theme_keys_processed:        
+            if theme_keys_processed:
+                # --- NEW: Save Metadata ---
+                # Ensure we save the readable names so the browser works well
+                if hasattr(self, 'current_album_name') and self.current_album_name:
+                    album_config['meta_album'] = self.current_album_name
+                if hasattr(self, 'current_artist_name') and self.current_artist_name:
+                    album_config['meta_artist'] = self.current_artist_name
+                    
                 self.color_cache.set_album_data(self.album_id, album_config)
                 
-                # Update parent window blob density immediately
                 slider_value = self.blob_amount_slider.value()
                 if self.parent():
                     self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
 
-            # Handle Custom Art persistence
             if self.custom_art_b64:
                 track_config = self.color_cache.get_album_data(self.track_id) or {}
                 track_config["custom_art_b64"] = self.custom_art_b64
                 self.color_cache.set_album_data(self.track_id, track_config)
 
-        # 5. Notify Main Window to Refresh
+        # 5. Notify Main Window
         if keys_to_save or quick:
             self.config_saved.emit(self.album_id, self.color_cache.get_album_data(self.album_id) or {})
+            # Refresh browser tab if open to show new metadata
+            if hasattr(self, 'browser_grid'):
+                self.populate_theme_browser()
 
         # 6. Check for Credential Changes (Requires Restart)
         new_spotify_id = self.spotify_id_input.text().strip()

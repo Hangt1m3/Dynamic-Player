@@ -743,22 +743,33 @@ class SpotifyPlayer(QMainWindow):
         self._pending_track_data = result_data
         self._pending_track_data["high_res_loaded"] = False
 
-        # Check if we are currently visible (opacity > 0)
-        # If we are visible, we need to fade out the OLD track first.
-        # If we are already hidden (e.g. idle screen or mid-transition), we can apply immediately.
         is_visible = self.artOpacity > 0.01 or self.textAlpha > 1
         
         if is_visible:
             if self.fade_in_group.state() == QAbstractAnimation.Running:
                 self.fade_in_group.stop()
-            
-            # Capture the current background color to crossfade FROM
             self._old_bg_color = self._current_bg_color
-            
             if self.fade_out_group.state() != QAbstractAnimation.Running:
                 self.fade_out_group.start()
         else:
             self._apply_pending_track_data()
+
+        # Update Dialog if visible
+        if self.settings_dialog and self.settings_dialog.isVisible():
+            if self._prev_track_data and "item" in self._prev_track_data:
+                item = self._prev_track_data["item"]
+                a_name = item["album"]["name"]
+                art_name = ", ".join(a["name"] for a in item["artists"])
+            else:
+                a_name = "Unknown"; art_name = "Unknown"
+
+            self.settings_dialog.start_content_fade_and_reload(
+                self._current_album_id,
+                self._current_track_id,
+                self.art.pixmap(),
+                album_name=a_name, # Pass name
+                artist_name=art_name # Pass artist
+            )
 
     def _on_fade_out_finished(self):
         if self._pending_track_data and self._pending_track_data['token'] == self.load_token:
@@ -923,12 +934,22 @@ class SpotifyPlayer(QMainWindow):
             self._set_album_art(result_data["pil_img"])
             self.art.setLoadingState(False)
             
+            # Update Dialog image and metadata
             if self.settings_dialog and self.settings_dialog.isVisible():
+                if self._prev_track_data and "item" in self._prev_track_data:
+                    item = self._prev_track_data["item"]
+                    a_name = item["album"]["name"]
+                    art_name = ", ".join(a["name"] for a in item["artists"])
+                else:
+                    a_name = "Unknown"; art_name = "Unknown"
+
                 self.settings_dialog.load_track_state(
                     self._current_album_id,
                     self._current_track_id,
                     self.art.pixmap(),
-                    animate=False
+                    animate=False,
+                    album_name=a_name, # Pass name
+                    artist_name=art_name # Pass artist
                 )
 
     def _apply_and_refresh_ui(self):
@@ -1241,8 +1262,17 @@ class SpotifyPlayer(QMainWindow):
 
     def toggle_notification_only_mode(self):
         """Toggles the mode where the player is hidden but notifications still work."""
+        settings = QSettings("SpotifySync", "App")
+        
         if self.notification_only_mode:
+            # --- EXITING MODE ---
             self.notification_only_mode = False
+            
+            # Restore previous notification setting state
+            if hasattr(self, '_was_notif_enabled_before_mode'):
+                # Convert boolean back to string for QSettings
+                prev_state = "true" if self._was_notif_enabled_before_mode else "false"
+                settings.setValue("notification_enabled", prev_state)
             
             if self.is_fullscreen and not self.multi_monitor_mode:
                 self.showFullScreen()
@@ -1258,7 +1288,16 @@ class SpotifyPlayer(QMainWindow):
             if self.tray_icon and not self.is_wallpaper_mode:
                 self.tray_icon.hide()
         else:
+            # --- ENTERING MODE ---
             if not self.tray_icon: return # Cannot enter this mode without tray to restore
+            
+            # Save current state
+            current_state = settings.value("notification_enabled", "false") == "true"
+            self._was_notif_enabled_before_mode = current_state
+            
+            # Force Notifications ON
+            settings.setValue("notification_enabled", "true")
+            
             self.notification_only_mode = True
             self.tray_icon.show()
             
@@ -1269,6 +1308,12 @@ class SpotifyPlayer(QMainWindow):
             self.exit_anim.setEasingCurve(QEasingCurve.OutQuad)
             self.exit_anim.finished.connect(self._hide_for_notif_mode)
             self.exit_anim.start()
+            
+            # Show a toast confirming the mode
+            if self.tray_icon:
+                self.tray_icon.showMessage("Notification Mode", 
+                                           "Player hidden. Notifications forced ON.", 
+                                           QSystemTrayIcon.Information, 2000)
 
     def _hide_for_notif_mode(self):
         if self.notification_only_mode:
@@ -1567,9 +1612,20 @@ class SpotifyPlayer(QMainWindow):
         track_id = self._current_track_id or "no-track"
         media_source = self.active_media_source or 'none'
 
-        # The dialog is already created, just update its state and show it.
+        # --- GET METADATA ---
+        current_album = self.album_name.text() if self.album_name else "Unknown Album"
+        current_artist = self.artist.text() if self.artist else "Unknown Artist"
+        
         self.settings_dialog.media_source = media_source
-        self.settings_dialog.load_track_state(album_id, track_id, pixmap, animate=False)
+        # Pass metadata
+        self.settings_dialog.load_track_state(
+            album_id, 
+            track_id, 
+            pixmap, 
+            animate=False, 
+            album_name=current_album, 
+            artist_name=current_artist
+        )
 
         # Position the dialog
         if self.is_wallpaper_mode and self.tray_icon:

@@ -217,8 +217,13 @@ if IS_WINDOWS:
                 if not manager: return None
                 session = manager.get_current_session()
                 
-                # Filter out Spotify (let the specific Spotify worker handle that) or empty sessions
-                if not session or session.source_app_user_model_id.lower().startswith("spotify"): 
+                # Filter out Spotify specifically to allow the main worker to handle it.
+                # Allow Apple Music (often "AppleInc.AppleMusic...") and others.
+                if not session: 
+                    return None
+                
+                app_id = session.source_app_user_model_id.lower()
+                if "spotify" in app_id: 
                     return None
                     
                 info = await session.try_get_media_properties_async()
@@ -229,21 +234,26 @@ if IS_WINDOWS:
                     album_title = info.album_title or "Unknown Album"
                     
                     # --- GENERATE SYNTHETIC IDs ---
-                    # We create a unique hash based on the metadata. 
-                    # This ensures that every time you play this album, it generates the SAME ID,
-                    # allowing "Per Album" settings to save and load correctly.
                     track_id = self._generate_id(f"{title}{artist}")
                     album_id = self._generate_id(f"{album_title}{artist}")
                     
                     # Fetch Thumbnail
                     thumbnail_data = None
+                    # Try/Except block specifically for thumbnail reading, as this often fails 
+                    # with Apple Music / iTunes streams on Windows.
                     if info.thumbnail:
-                        stream = await info.thumbnail.open_read_async()
-                        if stream and stream.size > 0:
-                            thumbnail_data = bytearray(stream.size)
-                            data_reader = DataReader(stream); await data_reader.load_async(stream.size); data_reader.read_bytes(thumbnail_data)
+                        try:
+                            stream = await info.thumbnail.open_read_async()
+                            if stream and stream.size > 0:
+                                thumbnail_data = bytearray(stream.size)
+                                data_reader = DataReader(stream)
+                                await data_reader.load_async(stream.size)
+                                data_reader.read_bytes(thumbnail_data)
+                        except Exception:
+                            # If thumbnail fails, we still want the track info
+                            thumbnail_data = None
                     
-                    # Construct an item dictionary that mimics the Spotify API structure
+                    # Construct an item dictionary
                     return {
                         "id": track_id, 
                         "item": {
@@ -251,11 +261,11 @@ if IS_WINDOWS:
                             "artists": [{"name": artist}], 
                             "album": {
                                 "name": album_title, 
-                                "images": [], # Local media has no URLs
-                                "id": album_id # <--- This enables Per-Album settings
+                                "images": [],
+                                "id": album_id 
                             }, 
                             "id": track_id, 
-                            "duration_ms": 0 # Duration is often unavailable in this API
+                            "duration_ms": 0 
                         }, 
                         "is_playing": True, 
                         "progress_ms": 0, 

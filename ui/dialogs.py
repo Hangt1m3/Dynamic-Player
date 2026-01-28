@@ -759,7 +759,10 @@ class ColorEditorDialog(QDialog):
         
         self.default_font_size_slider = QSlider(Qt.Horizontal); self.default_font_size_slider.setRange(50, 200); self.default_font_size_slider.setValue(self.initial_default_font_size_scale)
         self.default_font_size_label = self._create_dynamic_label(f"{self.initial_default_font_size_scale}%")
-        self.default_font_size_slider.valueChanged.connect(lambda v: self.default_font_size_label.setText(f"{v}%"))
+        
+        # FIX: Connect to a method that updates preview instantly
+        self.default_font_size_slider.valueChanged.connect(self._on_default_font_size_changed)
+        
         default_size_layout = QHBoxLayout(); default_size_layout.addWidget(self.default_font_size_slider); default_size_layout.addWidget(self.default_font_size_label)
 
         default_text_layout.addRow(self._create_label("Font:"), self.default_font_family_combo); default_text_layout.addRow(self._create_label("Style:"), self.default_font_style_combo)
@@ -810,6 +813,22 @@ class ColorEditorDialog(QDialog):
         def_bright_layout = QHBoxLayout()
         def_bright_layout.addWidget(self.default_brightness_slider); def_bright_layout.addWidget(self.default_brightness_label)
         global_visuals_layout.addRow(self._create_label("Default Brightness:"), def_bright_layout)
+
+        # --- NEW: Sound Volume Slider ---
+        self.sound_volume_slider = QSlider(Qt.Horizontal)
+        self.sound_volume_slider.setRange(0, 100)
+        # Get current volume from parent SoundManager
+        current_vol = int(self.parent().sound_manager.base_volume * 100)
+        self.sound_volume_slider.setValue(current_vol)
+        self.sound_volume_label = self._create_dynamic_label(f"{current_vol}%")
+        
+        # Connect to live update handler
+        self.sound_volume_slider.valueChanged.connect(self._on_sound_volume_changed)
+        
+        sound_layout = QHBoxLayout()
+        sound_layout.addWidget(self.sound_volume_slider)
+        sound_layout.addWidget(self.sound_volume_label)
+        global_visuals_layout.addRow(self._create_label("Sound Volume:"), sound_layout)
 
         # Data Management Group
         data_group = QGroupBox("Maintenance")
@@ -1344,6 +1363,24 @@ class ColorEditorDialog(QDialog):
         
         self.resize(final_w, final_h)
         self.setMinimumSize(800, 500)
+
+    def _on_default_font_size_changed(self, value):
+        """Updates label and applies global size to preview if override is OFF."""
+        self.default_font_size_label.setText(f"{value}%")
+        
+        # Fix: If user hasn't checked 'Override Default Size', changing the global default
+        # should immediately update the 'Current Theme' slider and preview.
+        if not self.override_size_checkbox.isChecked():
+            self.font_size_slider.blockSignals(True) # Prevent double update
+            self.font_size_slider.setValue(value)
+            self.font_size_slider.blockSignals(False)
+            self.font_size_label.setText(f"{value}%")
+            self.update_previews()
+
+    def _on_sound_volume_changed(self, value):
+        self.sound_volume_label.setText(f"{value}%")
+        # Live update master volume
+        self.parent().sound_manager.set_master_volume(value / 100.0)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2746,7 +2783,6 @@ class ColorEditorDialog(QDialog):
             else:
                 stored_val = str(stored_val) if stored_val is not None else default_val
 
-            # Comparison with tolerance for floats
             is_diff = False
             if type_cast == float:
                 is_diff = abs(current_val - stored_val) > 0.001
@@ -2779,8 +2815,11 @@ class ColorEditorDialog(QDialog):
         check("notification_smart_hide", "Notification Smart Hide", self.notif_smart_hide_checkbox.isChecked(), False, bool)
         check("notification_ignore_taskbar", "Notification Ignore Taskbar", self.notif_ignore_taskbar_checkbox.isChecked(), True, bool)
 
-        # Govee
+        # Global Visuals
         check("default_govee_brightness", "Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
+        
+        # --- NEW: Sound Volume Check ---
+        check("sound_volume", "Sound Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
 
         return changes
 

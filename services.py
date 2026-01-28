@@ -113,35 +113,37 @@ class GoveeController:
                     time.sleep(0.4)
         return errors
     
+# [UPDATE THIS CLASS]
 class SoundManager(QObject):
     """
-    Manages global sound effects with pitch and volume randomization
-    to prevent audio fatigue (listener adaptation).
+    Manages global sound effects with pitch and volume randomization.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.sounds = {} # Master templates
-        self.sound_pools = {} # Pools for overlap
+        self.sounds = {} 
+        self.sound_pools = {} 
         self.enabled = True
-        self.base_volume = 0.75
+        self.base_volume = 0.5 # Default master volume
         
-        # Load sounds by name. 
-        # _load_sound will automatically check for .wav and .mp3
+        # Specific volume multipliers for each sound type to balance levels
+        self.volume_modifiers = {
+            "click": 1.0,
+            "hover": 0.4,      # Hovers should be subtle
+            "slide": 0.25,     # Sliders generate many events, keep quiet
+            "toggle_on": 0.3,  # Requested to be quieter
+            "toggle_off": 0.3
+        }
+        
+        from utils import resource_path 
         self._load_sound("click", "click")
         self._load_sound("hover", "hover")
         self._load_sound("slide", "slide")
-        
-        # New distinct toggle sounds (replacing the single 'toggle.wav')
         self._load_sound("toggle_on", "toggle_on")
         self._load_sound("toggle_off", "toggle_off")
         
     def _load_sound(self, name, base_filename):
-        """Loads a sound effect into memory, checking for .wav and .mp3."""
-        # We import resource_path here to avoid circular imports
         from utils import resource_path 
-        
         found_path = None
-        # Check extensions in order of preference
         for ext in [".wav", ".mp3"]:
             full_path = resource_path(os.path.join("sounds", base_filename + ext))
             if os.path.exists(full_path):
@@ -153,85 +155,82 @@ class SoundManager(QObject):
             effect.setSource(QUrl.fromLocalFile(found_path))
             effect.setVolume(self.base_volume)
             self.sounds[name] = effect
-            self.sound_pools[name] = [] # Initialize empty pool
+            self.sound_pools[name] = [] 
 
-    def play(self, name, pitch_shift=True, overlap=False):
+    def set_master_volume(self, volume):
+        """Sets the master volume (0.0 to 1.0)."""
+        self.base_volume = max(0.0, min(1.0, volume))
+
+    def play(self, name, pitch_shift=True, overlap=True):
         """
         Plays a sound.
-        :param overlap: If True, allows multiple instances of this sound to play simultaneously.
+        :param overlap: Default True to allow concurrent sounds.
         """
         if not self.enabled or name not in self.sounds:
             return
 
-        # Select the effect instance to use
         effect = None
-        
         if overlap:
-            # Look for an idle effect in the pool
             pool = self.sound_pools[name]
             for s in pool:
                 if not s.isPlaying():
                     effect = s
                     break
             
-            # If no idle effect found, create a new one (clone from master)
             if effect is None:
-                # Limit pool size to prevent memory leaks if something goes wrong
                 if len(pool) < 20: 
                     effect = QSoundEffect()
                     effect.setSource(self.sounds[name].source())
                     pool.append(effect)
                 else:
-                    # Pool full, steal the oldest one (index 0)
                     effect = pool[0]
                     effect.stop()
         else:
-            # Use the single master instance
             effect = self.sounds[name]
             if effect.isPlaying():
                 effect.stop()
 
-        # Randomize volume slightly (±5%) to feel organic
+        # Calculate volume: Master * Specific Modifier * Random Variation
         vol_variation = random.uniform(0.95, 1.05)
-        effect.setVolume(max(0.0, min(1.0, self.base_volume * vol_variation)))
+        modifier = self.volume_modifiers.get(name, 1.0)
+        final_volume = max(0.0, min(1.0, self.base_volume * modifier * vol_variation))
+        
+        effect.setVolume(final_volume)
 
-        # Randomize pitch (playback rate) slightly (±2%)
         if pitch_shift and hasattr(effect, 'setPlaybackRate'):
              rate_variation = random.uniform(0.98, 1.02)
              effect.setPlaybackRate(rate_variation)
 
         effect.play()
 
+# [UPDATE THIS CLASS]
 class GlobalSoundFilter(QObject):
     """
-    Event filter that sits on the QApplication to detect 
-    clicks and hovers globally without manual connections.
+    Event filter to detect clicks and hovers globally.
     """
     def __init__(self, sound_manager):
         super().__init__()
         self.sm = sound_manager
 
     def _check_val(self, slider, old_val):
-        """Checks if the value actually changed after the event was processed."""
         try:
             if slider.value() != old_val:
-                # Use overlap=True to allow rapid tick sounds (zipper effect)
                 self.sm.play("slide", overlap=True)
         except RuntimeError:
             pass
 
     def eventFilter(self, obj, event):
-        # Check for Button Clicks
+        if not self.sm.enabled: return False
+
+        # --- Button & Tab Clicks ---
         if event.type() == QEvent.MouseButtonPress:
-            if obj.inherits("QAbstractButton"): 
+            # Check for standard buttons or Tab Bars
+            if obj.inherits("QAbstractButton") or obj.inherits("QTabBar"): 
                 if obj.isEnabled():
-                    if obj.isCheckable():
-                        # If the button IS currently checked, pressing it will turn it OFF.
-                        # If it is unchecked, pressing it will turn it ON.
+                    if obj.inherits("QAbstractButton") and obj.isCheckable():
                         if obj.isChecked():
-                            # Special handling: Radio Buttons usually can't be turned off by clicking.
                             if obj.inherits("QRadioButton") and obj.autoExclusive():
-                                self.sm.play("toggle_on") # Re-affirming 'ON'
+                                self.sm.play("toggle_on") 
                             else:
                                 self.sm.play("toggle_off")
                         else:
@@ -240,21 +239,25 @@ class GlobalSoundFilter(QObject):
                         self.sm.play("click")
             
             elif obj.inherits("QSlider") and obj.isEnabled():
-                # Slider click (jump)
                 old_val = obj.value()
                 QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
 
-        # Check for Slider Dragging (Mouse Move while button pressed)
+        # --- Dragging ---
         elif event.type() == QEvent.MouseMove:
-             if obj.inherits("QSlider") and obj.isEnabled():
-                 if event.buttons(): # If dragging
-                     old_val = obj.value()
-                     QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
+             if obj.inherits("QSlider") and obj.isEnabled() and event.buttons():
+                 old_val = obj.value()
+                 QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
 
-        # Check for Slider Scrolling
+        # --- Scrolling ---
         elif event.type() == QEvent.Wheel:
              if obj.inherits("QSlider") and obj.isEnabled():
                  old_val = obj.value()
                  QTimer.singleShot(0, lambda: self._check_val(obj, old_val))
+        
+        # --- NEW: Hover Sounds ---
+        elif event.type() == QEvent.Enter:
+            # Play hover for buttons, tabs, and sliders
+            if (obj.inherits("QAbstractButton") or obj.inherits("QTabBar") or obj.inherits("QSlider")) and obj.isEnabled():
+                self.sm.play("hover", overlap=True)
         
         return super().eventFilter(obj, event)

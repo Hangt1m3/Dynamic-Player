@@ -285,7 +285,7 @@ class SpotifyPlayer(QMainWindow):
     def _load_settings(self):
         settings = QSettings("SpotifySync", "App")
         
-        # Load base geometry and state that will be used to show the window initially
+        # Load base geometry...
         geometry = settings.value("geometry", QRect(100, 100, 600, 700)) 
         if not isinstance(geometry, QRect): geometry = QRect(100, 100, 600, 700)
         
@@ -300,6 +300,11 @@ class SpotifyPlayer(QMainWindow):
         else:
             self.default_govee_brightness = float(settings.value("govee_brightness", 1.0))
         self.blob_density = int(float(settings.value("blob_density", 200000)))
+        
+        # --- NEW: Load Sound Volume ---
+        sound_vol = float(settings.value("sound_volume", 0.5))
+        self.sound_manager.set_master_volume(sound_vol)
+
         if not isinstance(geometry, QRect): 
              geometry = QRect(100, 100, 600, 700)
         self.setGeometry(geometry)

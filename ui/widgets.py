@@ -470,6 +470,18 @@ class ColorPreviewLabel(QLabel):
         super().__init__(text, parent)
         self._border_enabled = False; self._border_color = QColor("black"); self._custom_text_color = None; self._border_width = 3; self._custom_font = None
     def setBorder(self, enabled, color): self._border_enabled = enabled; self._border_color = QColor(color); self.update()
+
+
+    def setCustomTextColor(self, color):
+        if isinstance(color, (list, tuple)):
+            # If it's a list like [255, 255, 255], unpack it
+            self._custom_text_color = QColor(*color)
+        elif isinstance(color, QColor):
+            self._custom_text_color = color
+        else:
+            # Fallback for hex strings or other valid QColor args
+            self._custom_text_color = QColor(color)
+        self.update()
     def setBorderSize(self, width): self._border_width = width; self.update()
     def setCustomTextColor(self, color): self._custom_text_color = QColor(color); self.update()
     def setCustomFont(self, font): self._custom_font = font; self.update()

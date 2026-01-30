@@ -532,6 +532,11 @@ class ColorEditorDialog(QDialog):
 
         self.tab_widget = QTabWidget()
         
+        # --- NEW: Use Custom Tab Bar ---
+        from ui.widgets import BorderedTabBar
+        self.custom_tab_bar = BorderedTabBar()
+        self.tab_widget.setTabBar(self.custom_tab_bar)
+        
         # --- NEW: Connect the tab change signal here ---
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         
@@ -814,6 +819,19 @@ class ColorEditorDialog(QDialog):
         def_bright_layout.addWidget(self.default_brightness_slider); def_bright_layout.addWidget(self.default_brightness_label)
         global_visuals_layout.addRow(self._create_label("Default Brightness:"), def_bright_layout)
 
+        # --- NEW: Mobile App Brightness Override ---
+        self.govee_override_checkbox = QCheckBox("Mobile App Brightness Override")
+        self.govee_override_checkbox.setToolTip("If enabled, the desktop app will ONLY control colors. Brightness is left to the Govee app.")
+        # Load value (defaulting to False)
+        settings = QSettings("SpotifySync", "App")
+        is_override_on = settings.value("govee_brightness_override", "false") == "true"
+        self.govee_override_checkbox.setChecked(is_override_on)
+        # Connect signal to update slider state immediately
+        self.govee_override_checkbox.toggled.connect(lambda c: self.default_brightness_slider.setDisabled(c))
+        self.default_brightness_slider.setDisabled(is_override_on)
+        
+        global_visuals_layout.addRow(self.govee_override_checkbox)
+
         # --- NEW: Sound Volume Slider ---
         self.sound_volume_slider = QSlider(Qt.Horizontal)
         self.sound_volume_slider.setRange(0, 100)
@@ -907,7 +925,7 @@ class ColorEditorDialog(QDialog):
 
         yield # Yield after Tab 4 setup
 
-        # --- Tab 5: Shortcuts ---
+        # --- Tab 5: Shortcuts (FIXED LAYOUT) ---
         controls_tab = QWidget()
         controls_tab_layout = QVBoxLayout(controls_tab)
         controls_tab_layout.setContentsMargins(0, 0, 5, 0)
@@ -920,9 +938,13 @@ class ColorEditorDialog(QDialog):
         controls_content.setObjectName("scrollAreaContent")
         controls_scroll.setWidget(controls_content)
 
-        controls_layout = QFormLayout(controls_content)
+        # FIX: Use QGridLayout for better alignment
+        from PyQt5.QtWidgets import QGridLayout
+        controls_layout = QGridLayout(controls_content)
         controls_layout.setContentsMargins(15, 15, 15, 15)
-        controls_layout.setSpacing(12)
+        controls_layout.setSpacing(15)
+        controls_layout.setColumnStretch(1, 1) # Allow description to stretch
+        
         controls_tab_layout.addWidget(controls_scroll)
         self.tab_widget.addTab(controls_tab, "Shortcuts")
 
@@ -936,13 +958,23 @@ class ColorEditorDialog(QDialog):
             "Esc": "Close the application."
         }
 
+        row = 0
         for key, desc in controls.items():
             key_label = self._create_dynamic_label(f"<b>{key}</b>", is_html_or_wrapped=True)
+            key_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            key_label.setFixedWidth(80) # Fixed width for keys column
+            
             desc_label = self._create_dynamic_label(desc, is_html_or_wrapped=True)
             desc_label.setWordWrap(True)
-            controls_layout.addRow(key_label, desc_label)
+            desc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            
+            controls_layout.addWidget(key_label, row, 0)
+            controls_layout.addWidget(desc_label, row, 1)
+            row += 1
+            
+        controls_layout.setRowStretch(row, 1) # Push content up
 
-        yield # Yield after Tab 5 setup
+        yield
 
         # --- Tab 6: Updates ---
         updates_tab = QWidget()
@@ -1678,6 +1710,7 @@ class ColorEditorDialog(QDialog):
             return
         self._last_stylesheet_params = current_params
         
+        # 1. Update Main Stylesheet
         sheet = get_common_stylesheet(self.ui_bg_color, self.ui_text_color, self.ui_accent_color)
         if border_enabled:
             sheet += f"""
@@ -1690,6 +1723,44 @@ class ColorEditorDialog(QDialog):
             """
         self.setStyleSheet(sheet)
         self._update_blob_buttons_style()
+        
+        # 2. Update Custom Tab Bar Colors
+        if hasattr(self, 'custom_tab_bar'):
+            self.custom_tab_bar.setColors(self.ui_text_color, self.ui_bg_color)
+
+        # 3. FIX: Update Govee Table Styling (White Rectangle Fix)
+        if hasattr(self, 'govee_device_table'):
+            # Calculate a semi-transparent grid color
+            grid_rgba = f"rgba({self.ui_text_color.red()}, {self.ui_text_color.green()}, {self.ui_text_color.blue()}, 50)"
+            
+            table_style = f"""
+                QTableWidget {{
+                    background-color: transparent;
+                    border: 1px solid {self.ui_text_color.name()};
+                    gridline-color: {grid_rgba};
+                    color: {self.ui_text_color.name()};
+                }}
+                QTableWidget::item {{
+                    border-bottom: 1px solid {grid_rgba};
+                    padding: 5px;
+                }}
+                QHeaderView::section {{
+                    background-color: {self.ui_accent_color.name()};
+                    color: {self.ui_bg_color.name()};
+                    border: none;
+                    padding: 4px;
+                    font-weight: bold;
+                }}
+                QTableCornerButton::section {{
+                    background-color: {self.ui_accent_color.name()};
+                }}
+                /* Fix Checkbox/Input colors inside table */
+                QCheckBox, QLineEdit {{
+                    color: {self.ui_text_color.name()};
+                    background: transparent;
+                }}
+            """
+            self.govee_device_table.setStyleSheet(table_style)
 
     def _update_blob_buttons_style(self):
         # High contrast style for blob buttons to ensure they are visible
@@ -2256,7 +2327,6 @@ class ColorEditorDialog(QDialog):
         
         self.browser_content = QWidget()
         
-        # --- FIX: Directly assign QGridLayout (removed the conflicting QHBoxLayout line) ---
         from PyQt5.QtWidgets import QGridLayout
         self.browser_grid = QGridLayout(self.browser_content)
         self.browser_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -2265,14 +2335,25 @@ class ColorEditorDialog(QDialog):
         scroll_area.setWidget(self.browser_content)
         browser_layout.addWidget(scroll_area)
         
-        # Refresh Button
-        refresh_btn = QPushButton("Refresh Saved Themes")
+        # --- Control Bar ---
+        control_layout = QHBoxLayout()
+        
+        refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.populate_theme_browser)
-        browser_layout.addWidget(refresh_btn)
+        
+        # New Batch Import Button
+        import_batch_btn = QPushButton("Import Albums")
+        import_batch_btn.setToolTip("Select multiple theme files to add or update.")
+        import_batch_btn.clicked.connect(self.import_batch_themes)
+        
+        control_layout.addWidget(refresh_btn)
+        control_layout.addWidget(import_batch_btn)
+        control_layout.addStretch() # Push buttons to left
+        
+        browser_layout.addLayout(control_layout)
 
         self.tab_widget.addTab(browser_tab, "Saved Themes")
         
-        # Initial Population
         self.populate_theme_browser()
         
         yield
@@ -2322,107 +2403,61 @@ class ColorEditorDialog(QDialog):
         card = QFrame()
         card.setFixedSize(220, 140) 
         
-        # --- Helper to safely ensure integer lists for QColor ---
         def safe_rgb(val):
             if not val or not isinstance(val, (list, tuple)) or len(val) < 3: return None
             return [int(c) for c in val[:3]]
 
-        # --- 1. Background & Gradient Logic ---
+        # --- Background ---
         bg_rgb = safe_rgb(data.get("player_bg_color"))
-        if not bg_rgb and "ui_palette" in data:
-            bg_rgb = safe_rgb(data["ui_palette"][0])
-        
-        # Fallback
+        if not bg_rgb and "ui_palette" in data: bg_rgb = safe_rgb(data["ui_palette"][0])
         if not bg_rgb: bg_rgb = [40, 40, 40]
         bg_color = QColor(*bg_rgb)
 
         blob_palette = data.get("blob_palette", [])
-        
-        # Construct Background Style (Diagonal Gradient)
         if blob_palette and len(blob_palette) > 0:
             blob_rgb = safe_rgb(blob_palette[0])
             if blob_rgb:
                 blob_col = QColor(*blob_rgb)
-                # Diagonal gradient from top-left (BG) to bottom-right (Blob Color)
                 bg_style = f"qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 {bg_color.name()}, stop:1 {blob_col.name()})"
-            else:
-                bg_style = bg_color.name()
-        else:
-            bg_style = bg_color.name()
+            else: bg_style = bg_color.name()
+        else: bg_style = bg_color.name()
 
-        # --- 2. Text Color Logic ---
+        # --- Text Color ---
         text_rgb = safe_rgb(data.get("text_color"))
-        
-        if text_rgb:
-            # If saved, use it
-            text_color = QColor(*text_rgb)
-        else:
-            # Auto-Calculate
-            try:
-                # Find accent for contrast calculation
-                accent_rgb = [100, 100, 100]
-                if "ui_palette" in data and len(data["ui_palette"]) > 1:
-                    accent_rgb = safe_rgb(data["ui_palette"][1]) or accent_rgb
-                
-                # Use util to get best color (ensure inputs are ints)
-                auto_rgb = get_best_text_color(bg_rgb, accent_rgb)
-                text_color = QColor(*safe_rgb(auto_rgb))
-            except Exception as e:
-                # Fallback to white if calculation fails, but log it
-                print(f"Theme Card Error ({album_id}): {e}")
-                text_color = QColor(255, 255, 255)
+        if text_rgb: text_color = QColor(*text_rgb)
+        else: text_color = QColor(255, 255, 255)
 
-        # --- 3. Border Logic ---
-        border_width = "2px"
+        # --- Card Border Logic ---
+        border_width_px = 2
         border_color_q = None
         
-        # Priority 1: Saved Text Border
-        if data.get("text_border_enabled"):
-            tb_rgb = safe_rgb(data.get("text_border_color"))
-            if tb_rgb:
-                border_color_q = QColor(*tb_rgb)
+        text_border_enabled = data.get("text_border_enabled", False)
+        saved_border_rgb = safe_rgb(data.get("text_border_color"))
         
-        # Priority 2: Album Accent
-        if not border_color_q:
-            if "ui_palette" in data and len(data["ui_palette"]) > 1:
-                accent = safe_rgb(data["ui_palette"][1])
-                if accent: border_color_q = QColor(*accent)
+        if text_border_enabled and saved_border_rgb:
+            border_color_q = QColor(*saved_border_rgb)
+        elif "ui_palette" in data and len(data["ui_palette"]) > 1:
+            accent = safe_rgb(data["ui_palette"][1])
+            if accent: border_color_q = QColor(*accent)
         
-        # Priority 3: Subtle Text Color Fallback
         if not border_color_q:
             border_color_q = QColor(text_color)
             border_color_q.setAlpha(100)
 
-        # Ensure alpha is handled correctly for stylesheet
-        border_rgba = f"rgba({border_color_q.red()}, {border_color_q.green()}, {border_color_q.blue()}, {border_color_q.alpha()/255:.2f})"
+        card_border_rgba = f"rgba({border_color_q.red()}, {border_color_q.green()}, {border_color_q.blue()}, {border_color_q.alpha()/255:.2f})"
 
-        # --- 4. Metadata ---
-        album_name = data.get("meta_album", "Unknown Album")
-        artist_name = data.get("meta_artist", "Unknown Artist")
-        
-        # Legacy fallback
-        if "meta_album" not in data:
-            album_name = f"ID: {album_id[:8]}"
-
-        has_blobs = "blob_palette" in data
-        has_lights = "lights_config" in data and data["lights_config"].get("mode") == "custom"
-        is_partial = "player_bg_color" not in data
-        
-        status_text = "Full Theme"
-        if is_partial: status_text = "Partial Save"
-        elif has_blobs and has_lights: status_text = "Full Theme + Lights"
-
-        # --- 5. Stylesheet ---
+        # --- Stylesheet ---
+        # FIX: added 'QLabel { border: none; ... }' to remove random borders around text
         card.setStyleSheet(f"""
             QFrame {{
                 background: {bg_style};
-                border: {border_width} solid {border_rgba};
+                border: {border_width_px}px solid {card_border_rgba};
                 border-radius: 12px;
             }}
-            QLabel {{ 
-                border: none; 
-                background: transparent; 
-                color: {text_color.name()}; 
+            QLabel {{
+                border: none;
+                background: transparent;
+                padding: 0px; 
             }}
             QPushButton {{
                 background-color: rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, 40);
@@ -2430,7 +2465,8 @@ class ColorEditorDialog(QDialog):
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
-                padding: 4px 10px;
+                padding: 2px 5px;
+                font-size: 10px;
             }}
             QPushButton:hover {{
                 background-color: {text_color.name()};
@@ -2442,63 +2478,166 @@ class ColorEditorDialog(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(2)
         
-        # Album Name
+        # --- Metadata ---
+        album_name = data.get("meta_album", "Unknown Album")
+        artist_name = data.get("meta_artist", "Unknown Artist")
+        if "meta_album" not in data: album_name = f"ID: {album_id[:8]}"
+
+        # FIX: Use standard QLabel for robust word wrapping (BorderedLabel doesn't wrap well)
         album_lbl = QLabel(album_name)
         album_lbl.setAlignment(Qt.AlignCenter)
         album_lbl.setWordWrap(True)
-        f = album_lbl.font()
-        f.setBold(True)
-        f.setPointSize(10)
-        album_lbl.setFont(f)
-        layout.addWidget(album_lbl, 1) 
+        f = album_lbl.font(); f.setBold(True); f.setPointSize(10); album_lbl.setFont(f)
         
-        # Artist Name
         artist_lbl = QLabel(artist_name)
         artist_lbl.setAlignment(Qt.AlignCenter)
         artist_lbl.setWordWrap(True)
-        f2 = artist_lbl.font()
-        f2.setPointSize(8)
-        artist_lbl.setFont(f2)
+        f2 = artist_lbl.font(); f2.setPointSize(8); artist_lbl.setFont(f2)
         
-        # Calculate artist opacity color
-        artist_text_col = QColor(text_color)
-        artist_text_col.setAlpha(180)
-        artist_rgba = f"rgba({artist_text_col.red()}, {artist_text_col.green()}, {artist_text_col.blue()}, {artist_text_col.alpha()/255:.2f})"
-        artist_lbl.setStyleSheet(f"color: {artist_rgba};")
+        # Apply Text Color
+        # We manually set the stylesheet color for the artist to handle opacity
+        artist_col = QColor(text_color)
+        artist_col.setAlpha(180)
+        
+        album_lbl.setStyleSheet(f"color: {text_color.name()};")
+        artist_lbl.setStyleSheet(f"color: rgba({artist_col.red()}, {artist_col.green()}, {artist_col.blue()}, {artist_col.alpha()/255:.2f});")
+
+        # Emulate "Text Border" using Shadow (since we can't use BorderedLabel with wrapping easily)
+        if text_border_enabled and saved_border_rgb:
+             shadow = QGraphicsDropShadowEffect()
+             shadow.setBlurRadius(0) # Hard shadow to look like a border
+             shadow.setColor(QColor(*saved_border_rgb))
+             shadow.setOffset(1, 1)
+             album_lbl.setGraphicsEffect(shadow)
+
+        layout.addWidget(album_lbl, 1)
         layout.addWidget(artist_lbl, 0)
-        
-        # Status Label
-        status_lbl = QLabel(status_text)
-        status_lbl.setAlignment(Qt.AlignCenter)
-        f3 = status_lbl.font()
-        f3.setItalic(True)
-        f3.setPointSize(7)
-        status_lbl.setFont(f3)
-        
-        status_col = QColor(text_color)
-        status_col.setAlpha(120)
-        status_rgba = f"rgba({status_col.red()}, {status_col.green()}, {status_col.blue()}, {status_col.alpha()/255:.2f})"
-        status_lbl.setStyleSheet(f"color: {status_rgba};")
-        layout.addWidget(status_lbl, 0)
         
         layout.addSpacing(6)
         
-        # Delete Button
+        # --- Action Buttons ---
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0,0,0,0)
-        btn_layout.addStretch()
+        btn_layout.setSpacing(5)
+        
+        export_btn = QPushButton("Export")
+        export_btn.setCursor(Qt.PointingHandCursor)
+        export_btn.clicked.connect(lambda: self.export_theme(album_id, data))
+        
+        import_btn = QPushButton("Import")
+        import_btn.setCursor(Qt.PointingHandCursor)
+        import_btn.clicked.connect(lambda: self.import_theme_to_card(album_id))
         
         del_btn = QPushButton("Delete")
-        del_btn.setFixedSize(70, 24)
         del_btn.setCursor(Qt.PointingHandCursor)
-        del_btn.clicked.connect(lambda: self.delete_theme(album_id))
+        del_btn.clicked.connect(lambda: self.confirm_delete_theme(album_id, album_name))
         
+        btn_layout.addWidget(export_btn)
+        btn_layout.addWidget(import_btn)
         btn_layout.addWidget(del_btn)
-        btn_layout.addStretch()
         
         layout.addLayout(btn_layout)
         
         return card
+
+    # [ADD NEW METHODS to ColorEditorDialog]
+    def confirm_delete_theme(self, album_id, album_name):
+        msg = ThemedMessageBox("Confirm Delete", 
+                               f"Are you sure you want to delete the saved theme for:\n\n<b>{album_name}</b>?", 
+                               [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)], 
+                               self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, 
+                               self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value())
+        
+        if msg.exec_() == QDialog.Accepted:
+            self.delete_theme(album_id)
+
+    # [UPDATE THIS METHOD]
+    def export_theme(self, album_id, data):
+        # Sanitize filename
+        safe_name = "".join(c for c in data.get("meta_album", "theme") if c.isalnum() or c in (' ', '-', '_')).strip()
+        if not safe_name: safe_name = "theme"
+        
+        filename, _ = FramelessFileDialog(self, "Export Theme", f"{safe_name}.json", "JSON Files (*.json)",
+                                          self.ui_bg_color, self.ui_accent_color, self.ui_text_color,
+                                          self.text_border_checkbox.isChecked(), self.text_border_color, 
+                                          self.text_border_size_slider.value()).getSaveFileName()
+        
+        if filename:
+            try:
+                # IMPORTANT: Inject the album_id so we can batch import later
+                export_data = data.copy()
+                export_data['_source_album_id'] = album_id
+                
+                with open(filename, 'w') as f:
+                    json.dump(export_data, f, indent=4)
+            except Exception as e:
+                print(f"Export failed: {e}")
+
+    def import_theme_to_card(self, target_album_id):
+        filename, _ = FramelessFileDialog(self, "Import Theme", "", "JSON Files (*.json)",
+                                          self.ui_bg_color, self.ui_accent_color, self.ui_text_color,
+                                          self.text_border_checkbox.isChecked(), self.text_border_color, 
+                                          self.text_border_size_slider.value()).getOpenFileName()
+        
+        if filename:
+            try:
+                with open(filename, 'r') as f:
+                    data = json.load(f)
+                
+                self.color_cache.set_album_data(target_album_id, data)
+                self.populate_theme_browser()
+                
+            except Exception as e:
+                print(f"Import failed: {e}")
+
+    # [ADD THIS NEW METHOD]
+    def import_batch_themes(self):
+        """Allows selecting multiple JSON files to import/update themes."""
+        filenames, _ = FramelessFileDialog(self, "Batch Import Themes", "", "JSON Files (*.json)",
+                                          self.ui_bg_color, self.ui_accent_color, self.ui_text_color,
+                                          self.text_border_checkbox.isChecked(), self.text_border_color, 
+                                          self.text_border_size_slider.value()).getOpenFileNames()
+        
+        if not filenames: return
+
+        imported_count = 0
+        skipped_count = 0
+        
+        for filename in filenames:
+            try:
+                with open(filename, 'r') as f:
+                    data = json.load(f)
+                
+                # Check for the ID we saved during export
+                target_id = data.get('_source_album_id')
+                
+                if target_id:
+                    # Clean up the internal ID key before saving to cache (optional, but keeps cache clean)
+                    # data.pop('_source_album_id', None) 
+                    
+                    # Update cache (Overwrite existing or create new)
+                    self.color_cache.set_album_data(target_id, data)
+                    imported_count += 1
+                else:
+                    print(f"Skipping {filename}: No '_source_album_id' found inside JSON.")
+                    skipped_count += 1
+                    
+            except Exception as e:
+                print(f"Failed to import {filename}: {e}")
+                skipped_count += 1
+
+        # Refresh the UI to show new cards
+        self.populate_theme_browser()
+        
+        # Show summary
+        summary = f"Imported: {imported_count}"
+        if skipped_count > 0:
+            summary += f"\nSkipped: {skipped_count} (Invalid format or missing ID)"
+            
+        ThemedMessageBox("Import Complete", summary, [("OK", QDialog.Accepted)], self, 
+                         self.ui_bg_color, self.ui_text_color, self.ui_accent_color,
+                         self.text_border_checkbox.isChecked(), self.text_border_color, 
+                         self.text_border_size_slider.value()).exec_()
 
     # [ADD THIS NEW METHOD]
     def delete_theme(self, album_id):
@@ -2819,6 +2958,13 @@ class ColorEditorDialog(QDialog):
         check("default_govee_brightness", "Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
         
         # --- NEW: Sound Volume Check ---
+        check("sound_volume", "Sound Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
+
+        # Global Visuals
+        check("default_govee_brightness", "Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
+        # --- NEW: Check Override ---
+        check("govee_brightness_override", "Mobile App Override", self.govee_override_checkbox.isChecked(), False, bool)
+        
         check("sound_volume", "Sound Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
 
         return changes

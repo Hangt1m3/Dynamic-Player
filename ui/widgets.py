@@ -544,3 +544,76 @@ class FontStyleDelegate(QStyledItemDelegate):
                  if "Bold" in style_name: option.font.setBold(True)
                  if "Italic" in style_name: option.font.setItalic(True)
         super().paint(painter, option, index)
+
+# [ADD THIS CLASS AT THE END OF widgets.py]
+from PyQt5.QtWidgets import QTabBar, QStyle, QStylePainter, QStyleOptionTab
+
+class BorderedTabBar(QTabBar):
+    """
+    A custom TabBar that draws a text border (outline) on the selected tab
+    to improve contrast, using the album's text color as the outline.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.text_color = QColor("white")
+        self.bg_color = QColor("black")
+        self.border_width = 2
+
+    def setColors(self, text_color, bg_color):
+        self.text_color = QColor(text_color)
+        self.bg_color = QColor(bg_color)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        option = QStyleOptionTab()
+
+        for index in range(self.count()):
+            self.initStyleOption(option, index)
+            
+            # Temporarily clear text so the default style doesn't draw it
+            tab_text = option.text
+            option.text = ""
+            painter.drawControl(QStyle.CE_TabBarTab, option)
+            
+            # Restore text for manual painting
+            option.text = tab_text
+            painter.save()
+            
+            rect = self.tabRect(index)
+            # Center text in the tab rect
+            painter.setFont(self.font())
+            
+            if index == self.currentIndex():
+                # --- SELECTED TAB: Draw with Outline ---
+                # Outline Color = User's Text Color (as requested)
+                # Fill Color = Background Color (to create contrast against the outline)
+                
+                path = QPainterPath()
+                # Calculate centered position
+                metrics = painter.fontMetrics()
+                x = rect.center().x() - (metrics.width(tab_text) / 2)
+                y = rect.center().y() + (metrics.ascent() / 2) - 1
+                
+                path.addText(x, y, self.font(), tab_text)
+                
+                # Draw Outline (Text Color)
+                pen = QPen(self.text_color)
+                pen.setWidth(self.border_width)
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+                
+                # Draw Fill (Background Color)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(self.bg_color)
+                painter.drawPath(path)
+                
+            else:
+                # --- UNSELECTED TABS: Standard Draw ---
+                # Usually text color, or slightly dimmed
+                painter.setPen(self.text_color)
+                painter.drawText(rect, Qt.AlignCenter, tab_text)
+
+            painter.restore()

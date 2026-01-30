@@ -285,7 +285,6 @@ class SpotifyPlayer(QMainWindow):
     def _load_settings(self):
         settings = QSettings("SpotifySync", "App")
         
-        # Load base geometry...
         geometry = settings.value("geometry", QRect(100, 100, 600, 700)) 
         if not isinstance(geometry, QRect): geometry = QRect(100, 100, 600, 700)
         
@@ -294,6 +293,10 @@ class SpotifyPlayer(QMainWindow):
         self._start_in_wallpaper = settings.value("start_in_wallpaper_mode", "false") == "true"
         
         self.lights_enabled = settings.value("lights_enabled", "true") == "true"
+        
+        # --- NEW: Govee Brightness Override ---
+        self.govee_brightness_override = settings.value("govee_brightness_override", "false") == "true"
+        
         val = settings.value("default_govee_brightness")
         if val is not None:
             self.default_govee_brightness = float(val)
@@ -301,7 +304,6 @@ class SpotifyPlayer(QMainWindow):
             self.default_govee_brightness = float(settings.value("govee_brightness", 1.0))
         self.blob_density = int(float(settings.value("blob_density", 200000)))
         
-        # --- NEW: Load Sound Volume ---
         sound_vol = float(settings.value("sound_volume", 0.5))
         self.sound_manager.set_master_volume(sound_vol)
 
@@ -317,15 +319,12 @@ class SpotifyPlayer(QMainWindow):
         self.default_text_border_enabled = settings.value("default_text_border_enabled", "false") == "true"
         self.default_text_border_size = int(settings.value("default_text_border_size", 3))
 
-        # Load recent colors
         recent_colors_str = settings.value("recent_colors", "[]")
         try:
-            # Stored as hex strings
             self.recent_colors = [QColor(name) for name in json.loads(recent_colors_str)]
         except (json.JSONDecodeError, TypeError):
             self.recent_colors = []
 
-        # Set initial geometry and flags based on loaded state
         if self.multi_monitor_mode:
             target_geo = settings.value("target_monitor_geo")
             if isinstance(target_geo, QRect):
@@ -337,7 +336,7 @@ class SpotifyPlayer(QMainWindow):
                     self.total_screens_geo = total_rect
                     self.setWindowFlags(Qt.FramelessWindowHint)
                     self.setGeometry(total_rect)
-            else: # Invalid multi-monitor data, fallback
+            else:
                 self.multi_monitor_mode = False
                 self.setWindowFlags(Qt.FramelessWindowHint)
                 self.setGeometry(geometry)
@@ -350,25 +349,26 @@ class SpotifyPlayer(QMainWindow):
         settings.setValue("fullscreen", "true" if self.is_fullscreen else "false")
         settings.setValue("lights_enabled", "true" if self.lights_enabled else "false")
         settings.setValue("default_govee_brightness", self.default_govee_brightness)
+        
+        # --- NEW: Save Override ---
+        settings.setValue("govee_brightness_override", "true" if self.govee_brightness_override else "false")
+        
         settings.setValue("blob_density", self.blob_density)
         settings.setValue("start_in_wallpaper_mode", "true" if self.is_wallpaper_mode else "false")
 
         if self.is_wallpaper_mode:
-            # If in wallpaper mode, save the state we would revert to
             settings.setValue("geometry", self._saved_geometry)
             settings.setValue("fullscreen", "true" if self._was_fullscreen else "false")
             settings.setValue("multi_monitor_mode", "true" if self._was_multi_monitor else "false")
             if self._was_multi_monitor:
                 settings.setValue("target_monitor_geo", self._saved_target_monitor_geo)
         else:
-            # Otherwise, save the current state
             settings.setValue("geometry", self.geometry())
             settings.setValue("fullscreen", "true" if self.is_fullscreen else "false")
             settings.setValue("multi_monitor_mode", "true" if self.multi_monitor_mode else "false")
             if self.multi_monitor_mode:
                 settings.setValue("target_monitor_geo", self.target_monitor_geo)
 
-        # Save recent colors
         recent_colors_names = [c.name(QColor.HexRgb) for c in self.recent_colors]
         settings.setValue("recent_colors", json.dumps(recent_colors_names))
 
@@ -1034,17 +1034,20 @@ class SpotifyPlayer(QMainWindow):
 
         self._update_blobs()
         # Only change lights for Spotify tracks
+        # Only change lights for Spotify tracks
         if self.active_media_source == 'spotify':
+            # --- FIX: Determine brightness to send ---
+            brightness_to_send = None if self.govee_brightness_override else self.govee_brightness
+            
             new_lights_config = {
                 "palette": lights_palette,
                 "devices": self.lights_enabled and self.govee_devices,
-                "brightness": self.govee_brightness
+                "brightness": brightness_to_send # Use the override-aware value
             }
             
-            # Only send if the configuration has actually changed
             if new_lights_config != self._last_sent_lights_config:
                 self._last_sent_lights_config = new_lights_config
-                worker = GoveeWorker(self._govee, lights_palette, self.lights_enabled and self.govee_devices, self.govee_brightness)
+                worker = GoveeWorker(self._govee, lights_palette, self.lights_enabled and self.govee_devices, brightness_to_send)
                 worker.signals.error.connect(self._on_govee_error)
                 self.threadpool.start(worker)
 

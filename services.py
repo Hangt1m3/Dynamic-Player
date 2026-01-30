@@ -101,16 +101,18 @@ class GoveeController:
                     except Exception: errors.append(f"Error - {device_info.get('name', 'Light')}")
                     time.sleep(0.4)
 
-                b_val = max(1, min(100, int(brightness * 100)))
-                if self._last_sent[device_id]['brightness'] != b_val:
-                    payload_brightness = {"device": device_info["device"], "model": device_info["model"], "cmd": {"name": "brightness", "value": b_val}}
-                    try:
-                        resp = requests.put(self.base_url, json=payload_brightness, headers=headers, timeout=5)
-                        if resp.status_code == 200: self._last_sent[device_id]['brightness'] = b_val
-                        elif resp.status_code == 429: errors.append(f"Rate Limit (429) - {device_info.get('name', 'Light')}"); time.sleep(2.0)
-                        elif resp.status_code != 200: errors.append(f"Error {resp.status_code} - {device_info.get('name', 'Light')}")
-                    except Exception: errors.append(f"Error (Brightness) - {device_info.get('name', 'Light')}")
-                    time.sleep(0.4)
+                # --- FIX: Check if brightness is None (Override Mode) ---
+                if brightness is not None:
+                    b_val = max(1, min(100, int(brightness * 100)))
+                    if self._last_sent[device_id]['brightness'] != b_val:
+                        payload_brightness = {"device": device_info["device"], "model": device_info["model"], "cmd": {"name": "brightness", "value": b_val}}
+                        try:
+                            resp = requests.put(self.base_url, json=payload_brightness, headers=headers, timeout=5)
+                            if resp.status_code == 200: self._last_sent[device_id]['brightness'] = b_val
+                            elif resp.status_code == 429: errors.append(f"Rate Limit (429) - {device_info.get('name', 'Light')}"); time.sleep(2.0)
+                            elif resp.status_code != 200: errors.append(f"Error {resp.status_code} - {device_info.get('name', 'Light')}")
+                        except Exception: errors.append(f"Error (Brightness) - {device_info.get('name', 'Light')}")
+                        time.sleep(0.4)
         return errors
     
 # [UPDATE THIS CLASS]

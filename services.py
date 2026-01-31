@@ -21,10 +21,17 @@ class ColorCache:
         self.cache = self._load()
 
     def _load(self):
-        if not os.path.exists(self.filepath): return {}
+        if not os.path.exists(self.filepath): 
+            return {}
         try:
-            with open(self.filepath, 'r') as f: return json.load(f)
-        except (json.JSONDecodeError, IOError): return {}
+            with open(self.filepath, 'r') as f:
+                data = json.load(f)
+                # Validation: Ensure the loaded data is actually a dictionary
+                if isinstance(data, dict):
+                    return data
+                return {}
+        except (json.JSONDecodeError, IOError, ValueError):
+            return {}
 
     def save(self):
         try:

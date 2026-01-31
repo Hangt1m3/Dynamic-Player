@@ -197,7 +197,7 @@ class SpotifyPlayer(QMainWindow):
             </ul>
             <p>Enjoy the vibes!</p>
             """
-            ThemedMessageBox("Welcome!", tutorial_text, [("Let's Go!", QDialog.Accepted)], self, self._current_bg_color, self._current_text_color, QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size).exec_()
+            ThemedMessageBox("Welcome!", tutorial_text, [("Let's Go!", QDialog.Accepted)], self, self._current_bg_color, QColor(*self._current_text_color), QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size).exec_()
             settings.setValue("first_run", False)
 
     def _show_idle_screen(self):
@@ -234,8 +234,27 @@ class SpotifyPlayer(QMainWindow):
 
     def _load_govee_settings(self):
         settings = QSettings("SpotifySync", "App")
-        self.govee_api_key = settings.value("govee_api_key", "")
-        self.govee_devices = json.loads(settings.value("govee_devices", "[]"))
+        # Force conversion to string to prevent type errors
+        self.govee_api_key = str(settings.value("govee_api_key", ""))
+        
+        dev_val = settings.value("govee_devices", "[]")
+        try:
+            # Handle case where QSettings returns bytes or other types
+            if isinstance(dev_val, (bytes, bytearray)):
+                dev_val = dev_val.decode('utf-8')
+            
+            if isinstance(dev_val, str):
+                self.govee_devices = json.loads(dev_val)
+            else:
+                # If it's not a string, it might be junk data or already parsed
+                self.govee_devices = []
+            
+            # Final validation: Govee devices must be a list
+            if not isinstance(self.govee_devices, list):
+                self.govee_devices = []
+                
+        except (json.JSONDecodeError, TypeError, ValueError):
+            self.govee_devices = []
 
     def _setup_spotify(self):
         settings = QSettings("SpotifySync", "App")
@@ -285,46 +304,69 @@ class SpotifyPlayer(QMainWindow):
     def _load_settings(self):
         settings = QSettings("SpotifySync", "App")
         
-        geometry = settings.value("geometry", QRect(100, 100, 600, 700)) 
-        if not isinstance(geometry, QRect): geometry = QRect(100, 100, 600, 700)
-        
-        self.is_fullscreen = settings.value("fullscreen", "true") == "true"
-        self.multi_monitor_mode = settings.value("multi_monitor_mode", "false") == "true"
-        self._start_in_wallpaper = settings.value("start_in_wallpaper_mode", "false") == "true"
-        
-        self.lights_enabled = settings.value("lights_enabled", "true") == "true"
-        
-        # --- NEW: Govee Brightness Override ---
-        self.govee_brightness_override = settings.value("govee_brightness_override", "false") == "true"
-        
-        val = settings.value("default_govee_brightness")
-        if val is not None:
-            self.default_govee_brightness = float(val)
+        # --- Helper for safe casting ---
+        def safe_cast(val, type_func, default):
+            try:
+                if val is None: return default
+                return type_func(val)
+            except (ValueError, TypeError):
+                return default
+
+        def as_bool(val, default):
+            if val is None: return default
+            if isinstance(val, bool): return val
+            return str(val).lower() == 'true'
+        # -------------------------------
+
+        # Geometry
+        val = settings.value("geometry")
+        if isinstance(val, QRect):
+            self.setGeometry(val)
         else:
-            self.default_govee_brightness = float(settings.value("govee_brightness", 1.0))
-        self.blob_density = int(float(settings.value("blob_density", 200000)))
+            self.setGeometry(QRect(100, 100, 600, 700))
+
+        # Booleans
+        self.is_fullscreen = as_bool(settings.value("fullscreen"), True)
+        self.multi_monitor_mode = as_bool(settings.value("multi_monitor_mode"), False)
+        self._start_in_wallpaper = as_bool(settings.value("start_in_wallpaper_mode"), False)
+        self.lights_enabled = as_bool(settings.value("lights_enabled"), True)
+        self.govee_brightness_override = as_bool(settings.value("govee_brightness_override"), False)
+
+        # Numbers
+        self.default_govee_brightness = safe_cast(settings.value("default_govee_brightness"), float, 1.0)
+        # Fallback to legacy key if needed
+        if settings.value("default_govee_brightness") is None:
+             self.default_govee_brightness = safe_cast(settings.value("govee_brightness"), float, 1.0)
+
+        self.blob_density = int(safe_cast(settings.value("blob_density"), float, 200000))
         
-        sound_vol = float(settings.value("sound_volume", 0.5))
+        sound_vol = safe_cast(settings.value("sound_volume"), float, 0.5)
         self.sound_manager.set_master_volume(sound_vol)
 
-        if not isinstance(geometry, QRect): 
-             geometry = QRect(100, 100, 600, 700)
-        self.setGeometry(geometry)
+        # Fonts & Defaults
+        self.default_font_family = str(settings.value("default_font_family", "Trebuchet MS"))
+        self.default_font_style = str(settings.value("default_font_style", "Bold"))
+        self.default_font_size_scale = int(safe_cast(settings.value("default_font_size_scale"), float, 100))
+        self.default_progress_bar_enabled = as_bool(settings.value("default_progress_bar_enabled"), False)
+        self.default_text_border_enabled = as_bool(settings.value("default_text_border_enabled"), False)
+        self.default_text_border_size = int(safe_cast(settings.value("default_text_border_size"), float, 3))
 
-        # Load default font styles
-        self.default_font_family = settings.value("default_font_family", "Trebuchet MS")
-        self.default_font_style = settings.value("default_font_style", "Bold")
-        self.default_font_size_scale = int(settings.value("default_font_size_scale", 100))
-        self.default_progress_bar_enabled = settings.value("default_progress_bar_enabled", "false") == "true"
-        self.default_text_border_enabled = settings.value("default_text_border_enabled", "false") == "true"
-        self.default_text_border_size = int(settings.value("default_text_border_size", 3))
-
+        # Recent Colors (JSON)
         recent_colors_str = settings.value("recent_colors", "[]")
         try:
-            self.recent_colors = [QColor(name) for name in json.loads(recent_colors_str)]
-        except (json.JSONDecodeError, TypeError):
+            if isinstance(recent_colors_str, str):
+                loaded = json.loads(recent_colors_str)
+            else:
+                loaded = [] 
+            
+            if isinstance(loaded, list):
+                self.recent_colors = [QColor(name) for name in loaded]
+            else:
+                self.recent_colors = []
+        except (json.JSONDecodeError, TypeError, ValueError):
             self.recent_colors = []
 
+        # Multi-monitor Logic
         if self.multi_monitor_mode:
             target_geo = settings.value("target_monitor_geo")
             if isinstance(target_geo, QRect):
@@ -334,14 +376,20 @@ class SpotifyPlayer(QMainWindow):
                     total_rect = QRect()
                     for screen in screens: total_rect = total_rect.united(screen.geometry())
                     self.total_screens_geo = total_rect
-                    self.setWindowFlags(Qt.FramelessWindowHint)
-                    self.setGeometry(total_rect)
+                    
+                    # Validate that target_geo is actually within total_screens_geo
+                    if not total_rect.intersects(target_geo):
+                        self.multi_monitor_mode = False
+                        self.setGeometry(QRect(100, 100, 600, 700))
+                    else:
+                        self.setWindowFlags(Qt.FramelessWindowHint)
+                        self.setGeometry(total_rect)
             else:
                 self.multi_monitor_mode = False
                 self.setWindowFlags(Qt.FramelessWindowHint)
-                self.setGeometry(geometry)
+                self.setGeometry(self.geometry())
         else:
-            self.setGeometry(geometry)
+            self.setGeometry(self.geometry())
 
     def _save_settings(self):
         settings = QSettings("SpotifySync", "App")

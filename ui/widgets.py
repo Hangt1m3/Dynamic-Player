@@ -502,13 +502,33 @@ class NoScrollComboBox(QComboBox):
     def wheelEvent(self, event): event.ignore()
 
 class CircularButton(QPushButton):
-    def __init__(self, tooltip="", parent=None):
+    def __init__(self, tooltip="", icon_char="", parent=None):
         super().__init__("", parent)
-        self.setFixedSize(50, 50); self.setToolTip(tooltip)
+        self.setFixedSize(50, 50)
+        self.setToolTip(tooltip)
+        
+        # Set icon character (emoji or symbol)
+        if icon_char:
+            self.setText(icon_char)
+            font = self.font()
+            font.setPointSize(18)
+            self.setFont(font)
+        
         self.setStyleSheet("""
-            QPushButton { background-color: rgba(20, 20, 20, 0.6); border: 1px solid rgba(255, 255, 255, 0.7); border-radius: 25px; color: white; }
-            QPushButton:hover { background-color: rgba(40, 40, 40, 0.8); border: 1px solid white; }
-            QPushButton:pressed { background-color: rgba(0, 0, 0, 0.6); }
+            QPushButton { 
+                background-color: rgba(20, 20, 20, 0.6); 
+                border: 1px solid rgba(255, 255, 255, 0.7); 
+                border-radius: 25px; 
+                color: white; 
+                font-weight: bold;
+            }
+            QPushButton:hover { 
+                background-color: rgba(40, 40, 40, 0.8); 
+                border: 1px solid white; 
+            }
+            QPushButton:pressed { 
+                background-color: rgba(0, 0, 0, 0.6); 
+            }
         """)
 
 # --- NEW ADDITIONS BELOW ---
@@ -562,18 +582,24 @@ from PyQt5.QtWidgets import QTabBar, QStyle, QStylePainter, QStyleOptionTab
 
 class BorderedTabBar(QTabBar):
     """
-    A custom TabBar that draws a text border (outline) on the selected tab
-    to improve contrast, using the album's text color as the outline.
+    A custom TabBar that draws text borders on tabs based on settings.
+    Selected tab uses the saved text color and removes border for clarity.
+    Other tabs apply text border if enabled, using the border color.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.text_color = QColor("white")
         self.bg_color = QColor("black")
+        self.border_color = QColor("black")
         self.border_width = 2
+        self.border_enabled = False
 
-    def setColors(self, text_color, bg_color):
+    def setColors(self, text_color, bg_color, border_color=None, border_enabled=False):
         self.text_color = QColor(text_color)
         self.bg_color = QColor(bg_color)
+        if border_color:
+            self.border_color = QColor(border_color)
+        self.border_enabled = border_enabled
         self.update()
 
     def paintEvent(self, event):
@@ -593,39 +619,42 @@ class BorderedTabBar(QTabBar):
             painter.save()
             
             rect = self.tabRect(index)
-            # Center text in the tab rect
             painter.setFont(self.font())
             
             if index == self.currentIndex():
-                # --- SELECTED TAB: Draw with Outline ---
-                # Outline Color = User's Text Color (as requested)
-                # Fill Color = Background Color (to create contrast against the outline)
-                
-                path = QPainterPath()
-                # Calculate centered position
+                # --- SELECTED TAB: Use text color, no border ---
                 metrics = painter.fontMetrics()
                 x = rect.center().x() - (metrics.width(tab_text) / 2)
                 y = rect.center().y() + (metrics.ascent() / 2) - 1
                 
-                path.addText(x, y, self.font(), tab_text)
-                
-                # Draw Outline (Text Color)
-                pen = QPen(self.text_color)
-                pen.setWidth(self.border_width)
-                pen.setJoinStyle(Qt.RoundJoin)
-                painter.setPen(pen)
-                painter.setBrush(Qt.NoBrush)
-                painter.drawPath(path)
-                
-                # Draw Fill (Background Color)
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(self.bg_color)
-                painter.drawPath(path)
-                
-            else:
-                # --- UNSELECTED TABS: Standard Draw ---
-                # Usually text color, or slightly dimmed
                 painter.setPen(self.text_color)
-                painter.drawText(rect, Qt.AlignCenter, tab_text)
+                painter.drawText(int(x), int(y), tab_text)
+            else:
+                # --- UNSELECTED TABS: Apply border if enabled ---
+                if self.border_enabled:
+                    # Draw with border outline
+                    metrics = painter.fontMetrics()
+                    x = rect.center().x() - (metrics.width(tab_text) / 2)
+                    y = rect.center().y() + (metrics.ascent() / 2) - 1
+                    
+                    path = QPainterPath()
+                    path.addText(x, y, self.font(), tab_text)
+                    
+                    # Draw Outline (Border Color)
+                    pen = QPen(self.border_color)
+                    pen.setWidth(self.border_width)
+                    pen.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawPath(path)
+                    
+                    # Draw Fill (Text Color)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(self.text_color)
+                    painter.drawPath(path)
+                else:
+                    # Standard text draw
+                    painter.setPen(self.text_color)
+                    painter.drawText(rect, Qt.AlignCenter, tab_text)
 
             painter.restore()

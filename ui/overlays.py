@@ -26,19 +26,19 @@ class OverlayWidget(QWidget):
         container_layout.setSpacing(20)
         
         # Initialize buttons with NoFocus policy to prevent stealing keybinds from the main window
-        self.settings_button = CircularButton(tooltip="Settings (C)")
+        self.settings_button = CircularButton(tooltip="Settings (C)", icon_char="⚙")
         self.settings_button.setFocusPolicy(Qt.NoFocus)
         
-        self.lights_button = CircularButton(tooltip="Toggle Lights (L)")
+        self.lights_button = CircularButton(tooltip="Toggle Lights (L)", icon_char="💡")
         self.lights_button.setFocusPolicy(Qt.NoFocus)
         
-        self.multi_monitor_button = CircularButton(tooltip="Toggle Multi-Monitor (F11)")
+        self.multi_monitor_button = CircularButton(tooltip="Toggle Multi-Monitor (F11)", icon_char="🖥")
         self.multi_monitor_button.setFocusPolicy(Qt.NoFocus)
         
-        self.wallpaper_button = CircularButton(tooltip="Toggle Wallpaper Mode (F12)")
+        self.wallpaper_button = CircularButton(tooltip="Toggle Wallpaper Mode (F12)", icon_char="🎨")
         self.wallpaper_button.setFocusPolicy(Qt.NoFocus)
         
-        self.notif_mode_button = CircularButton(tooltip="Notification Only Mode")
+        self.notif_mode_button = CircularButton(tooltip="Notification Only Mode", icon_char="📬")
         self.notif_mode_button.setFocusPolicy(Qt.NoFocus)
         
         # FIX: Set FocusPolicy to NoFocus for all buttons.

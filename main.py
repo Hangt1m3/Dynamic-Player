@@ -94,6 +94,10 @@ class SpotifyPlayer(QMainWindow):
         self.notification_only_mode = False
         self.recent_colors = []
         self.drag_pos = None
+        self.resize_corner = None  # Track which corner is being dragged: TL, TR, BL, BR, None
+        self.resize_start_rect = None  # Store the window rect when resize starts
+        self.resize_start_pos = None  # Store the mouse position when resize starts
+        self.RESIZE_CORNER_SIZE = 15  # Pixel size for corner detection
 
         self.multi_monitor_mode = False
         self.target_monitor_geo = None
@@ -486,60 +490,76 @@ class SpotifyPlayer(QMainWindow):
         self.setTextAlpha(self._text_alpha)
 
     def _setup_animations(self):
-        EASING_CURVE = QEasingCurve.InOutCubic
-        EASING_IN = QEasingCurve.InCubic
         EASING_OUT = QEasingCurve.OutCubic
+        EASING_IN_OUT = QEasingCurve.InOutCubic
         self.fade_in_group = QParallelAnimationGroup(self)
         self.fade_out_group = QParallelAnimationGroup(self)
         
-        # Art Opacity Animations
-        art_anim_in = QPropertyAnimation(self, b"artOpacity"); art_anim_in.setDuration(800); art_anim_in.setEndValue(1.0); art_anim_in.setEasingCurve(EASING_CURVE)
-        art_anim_out = QPropertyAnimation(self, b"artOpacity"); art_anim_out.setDuration(800); art_anim_out.setEndValue(0.0); art_anim_out.setEasingCurve(EASING_CURVE)
-        art_anim_in = QPropertyAnimation(self, b"artOpacity"); art_anim_in.setDuration(800); art_anim_in.setEndValue(1.0); art_anim_in.setEasingCurve(EASING_IN)
-        art_anim_out = QPropertyAnimation(self, b"artOpacity"); art_anim_out.setDuration(800); art_anim_out.setEndValue(0.0); art_anim_out.setEasingCurve(EASING_OUT)
-        art_anim_in = QPropertyAnimation(self, b"artOpacity"); art_anim_in.setDuration(800); art_anim_in.setEndValue(1.0); art_anim_in.setEasingCurve(EASING_OUT)
-        art_anim_out = QPropertyAnimation(self, b"artOpacity"); art_anim_out.setDuration(800); art_anim_out.setEndValue(0.0); art_anim_out.setEasingCurve(EASING_IN)
+        # Art Opacity Animations - Entrance
+        art_anim_in = QPropertyAnimation(self, b"artOpacity")
+        art_anim_in.setDuration(800)
+        art_anim_in.setStartValue(0.0)
+        art_anim_in.setEndValue(1.0)
+        art_anim_in.setEasingCurve(EASING_OUT)
         self.fade_in_group.addAnimation(art_anim_in)
+        
+        # Art Opacity Animations - Exit
+        art_anim_out = QPropertyAnimation(self, b"artOpacity")
+        art_anim_out.setDuration(800)
+        art_anim_out.setStartValue(1.0)
+        art_anim_out.setEndValue(0.0)
+        art_anim_out.setEasingCurve(EASING_OUT)
         self.fade_out_group.addAnimation(art_anim_out)
 
         # Staggered Text Entrance
         def add_staggered_anim(target, delay):
-            # Opacity
-            op_anim = QPropertyAnimation(target, b"opacity"); op_anim.setDuration(800); op_anim.setStartValue(0.0); op_anim.setEndValue(1.0); op_anim.setEasingCurve(QEasingCurve.OutCubic)
-            op_anim = QPropertyAnimation(target, b"opacity"); op_anim.setDuration(800); op_anim.setStartValue(0.0); op_anim.setEndValue(1.0); op_anim.setEasingCurve(EASING_IN)
-            op_anim = QPropertyAnimation(target, b"opacity"); op_anim.setDuration(800); op_anim.setStartValue(0.0); op_anim.setEndValue(1.0); op_anim.setEasingCurve(EASING_OUT)
-            # Slide In (From Left)
-            slide_anim = QPropertyAnimation(target, b"anim_offset_x"); slide_anim.setDuration(800); slide_anim.setStartValue(-40.0); slide_anim.setEndValue(0.0); slide_anim.setEasingCurve(QEasingCurve.OutCubic)
-            slide_anim = QPropertyAnimation(target, b"anim_offset_x"); slide_anim.setDuration(800); slide_anim.setStartValue(-40.0); slide_anim.setEndValue(0.0); slide_anim.setEasingCurve(EASING_IN)
-            slide_anim = QPropertyAnimation(target, b"anim_offset_x"); slide_anim.setDuration(800); slide_anim.setStartValue(-40.0); slide_anim.setEndValue(0.0); slide_anim.setEasingCurve(EASING_OUT)
+            # Opacity animation - start at 0.0 (fully transparent)
+            op_anim = QPropertyAnimation(target, b"opacity")
+            op_anim.setDuration(800)
+            op_anim.setStartValue(0.0)
+            op_anim.setEndValue(1.0)
+            op_anim.setEasingCurve(EASING_OUT)
+            
+            # Slide In (From Left) - start at -40.0 offset
+            slide_anim = QPropertyAnimation(target, b"anim_offset_x")
+            slide_anim.setDuration(800)
+            slide_anim.setStartValue(-40.0)
+            slide_anim.setEndValue(0.0)
+            slide_anim.setEasingCurve(EASING_OUT)
             
             if delay > 0:
-                seq_op = QSequentialAnimationGroup(); seq_op.addPause(delay); seq_op.addAnimation(op_anim); self.fade_in_group.addAnimation(seq_op)
-                seq_slide = QSequentialAnimationGroup(); seq_slide.addPause(delay); seq_slide.addAnimation(slide_anim); self.fade_in_group.addAnimation(seq_slide)
+                seq_op = QSequentialAnimationGroup()
+                seq_op.addPause(delay)
+                seq_op.addAnimation(op_anim)
+                self.fade_in_group.addAnimation(seq_op)
+                
+                seq_slide = QSequentialAnimationGroup()
+                seq_slide.addPause(delay)
+                seq_slide.addAnimation(slide_anim)
+                self.fade_in_group.addAnimation(seq_slide)
             else:
-                self.fade_in_group.addAnimation(op_anim); self.fade_in_group.addAnimation(slide_anim)
+                self.fade_in_group.addAnimation(op_anim)
+                self.fade_in_group.addAnimation(slide_anim)
 
         add_staggered_anim(self.title, 0)
         add_staggered_anim(self.album_name, 100)
         add_staggered_anim(self.artist, 200)
 
-        # Text Exit (Slide Out)
+        # Text Exit (Slide Out to -40 then fade)
         def add_exit_anim(target, delay):
+            # Slide out - moves text left while fading
             slide_out = QPropertyAnimation(target, b"anim_offset_x")
             slide_out.setDuration(800)
             slide_out.setStartValue(0.0)
             slide_out.setEndValue(-40.0)
-            slide_out.setEasingCurve(EASING_CURVE)
             slide_out.setEasingCurve(EASING_OUT)
-            slide_out.setEasingCurve(EASING_IN)
 
+            # Opacity - fade to transparent
             op_out = QPropertyAnimation(target, b"opacity")
             op_out.setDuration(800)
             op_out.setStartValue(1.0)
             op_out.setEndValue(0.0)
-            op_out.setEasingCurve(EASING_CURVE)
             op_out.setEasingCurve(EASING_OUT)
-            op_out.setEasingCurve(EASING_IN)
 
             if delay > 0:
                 seq_slide = QSequentialAnimationGroup()
@@ -559,24 +579,33 @@ class SpotifyPlayer(QMainWindow):
         add_exit_anim(self.album_name, 100)
         add_exit_anim(self.artist, 200)
         
-        self.fade_out_group.finished.connect(self._on_fade_out_finished); self.text_color_anim = QVariantAnimation(self); self.text_color_anim.setDuration(1200); self.text_color_anim.setEasingCurve(EASING_CURVE); self.text_color_anim.valueChanged.connect(self.setTextColor)
-        self.bg_fade_anim = QPropertyAnimation(self, b"bgCrossfadeLerp"); self.bg_fade_anim.setDuration(1200); self.bg_fade_anim.setEasingCurve(EASING_CURVE)
-        self.fade_out_group.finished.connect(self._on_fade_out_finished); self.text_color_anim = QVariantAnimation(self); self.text_color_anim.setDuration(1200); self.text_color_anim.setEasingCurve(EASING_IN); self.text_color_anim.valueChanged.connect(self.setTextColor)
-        self.bg_fade_anim = QPropertyAnimation(self, b"bgCrossfadeLerp"); self.bg_fade_anim.setDuration(1200); self.bg_fade_anim.setEasingCurve(EASING_IN)
-        self.fade_out_group.finished.connect(self._on_fade_out_finished); self.text_color_anim = QVariantAnimation(self); self.text_color_anim.setDuration(1200); self.text_color_anim.setEasingCurve(EASING_OUT); self.text_color_anim.valueChanged.connect(self.setTextColor)
-        self.bg_fade_anim = QPropertyAnimation(self, b"bgCrossfadeLerp"); self.bg_fade_anim.setDuration(1200); self.bg_fade_anim.setEasingCurve(EASING_OUT)
+        # Color and background fade animations
+        self.fade_out_group.finished.connect(self._on_fade_out_finished)
+        
+        self.text_color_anim = QVariantAnimation(self)
+        self.text_color_anim.setDuration(1200)
+        self.text_color_anim.setEasingCurve(EASING_IN_OUT)
+        self.text_color_anim.valueChanged.connect(self.setTextColor)
+        
+        self.bg_fade_anim = QPropertyAnimation(self, b"bgCrossfadeLerp")
+        self.bg_fade_anim.setDuration(1200)
+        self.bg_fade_anim.setStartValue(0.0)
+        self.bg_fade_anim.setEndValue(1.0)
+        self.bg_fade_anim.setEasingCurve(EASING_IN_OUT)
 
+        # Background fade out animation
         bg_fade_out_anim = QPropertyAnimation(self, b"bgCrossfadeLerp")
         bg_fade_out_anim.setDuration(800)
+        bg_fade_out_anim.setStartValue(1.0)
         bg_fade_out_anim.setEndValue(0.0)
-        bg_fade_out_anim.setEasingCurve(EASING_CURVE)
         bg_fade_out_anim.setEasingCurve(EASING_OUT)
-        bg_fade_out_anim.setEasingCurve(EASING_IN)
         self.fade_out_group.addAnimation(bg_fade_out_anim)
+        
+        # Art scale animation
         self.art_scale_anim = QPropertyAnimation(self.art, b"scale")
         self.art_scale_anim.setDuration(600)
-        self.art_scale_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self.art_scale_anim.setEasingCurve(EASING_IN)
+        self.art_scale_anim.setStartValue(0.9)
+        self.art_scale_anim.setEndValue(1.0)
         self.art_scale_anim.setEasingCurve(EASING_OUT)
 
     def _setup_tray_icon(self):
@@ -1886,32 +1915,199 @@ class SpotifyPlayer(QMainWindow):
             self.show()
             if self.tray_icon: self.tray_icon.show()
 
+    def _position_overlay_at_monitor_bottom(self):
+        """Position the overlay centered at the bottom of the current monitor."""
+        # Determine which monitor the player is on
+        monitor_geo = None
+        if self.multi_monitor_mode and self.target_monitor_geo:
+            monitor_geo = self.target_monitor_geo
+        else:
+            # In single monitor or fullscreen, use the player's current screen
+            screen = QApplication.screenAt(self.geometry().center())
+            if screen:
+                monitor_geo = screen.geometry()
+            else:
+                screens = QApplication.screens()
+                if screens:
+                    monitor_geo = screens[0].geometry()
+        
+        if monitor_geo:
+            # Center horizontally and position at bottom with some margin
+            overlay_width = self.overlay.width()
+            overlay_height = self.overlay.height()
+            x = monitor_geo.left() + (monitor_geo.width() - overlay_width) // 2
+            y = monitor_geo.bottom() - overlay_height - 60  # 60 pixel margin from bottom
+            self.overlay.move(x, y)
+
+    def _position_overlay_at_window_bottom(self):
+        """Position the overlay centered at the bottom of the player window.
+        This keeps the overlay inside the window bounds and updates while resizing.
+        Coordinates used are global screen coordinates so move() places the overlay correctly.
+        """
+        if not self.overlay:
+            return
+
+        overlay_width = self.overlay.width()
+        overlay_height = self.overlay.height()
+
+        win_geo = self.geometry()
+        # Center horizontally within window
+        x = win_geo.left() + (win_geo.width() - overlay_width) // 2
+        # Position slightly above the bottom edge so it stays inside the window
+        margin = 16
+        y = win_geo.bottom() - overlay_height - margin
+        # Ensure overlay does not go above the top of the window
+        if y < win_geo.top():
+            y = win_geo.top()
+
+        self.overlay.move(x, y)
+
+    def _get_corner_at_position(self, pos):
+        """
+        Determine if position is within a circular corner region and return which corner.
+        The resizable area is a circle that fits within the window's rounded corner.
+        """
+        radius = 40  # Circular resize area radius
+        width = self.width()
+        height = self.height()
+        
+        # Calculate distance from each corner
+        # Top-left corner
+        dist_tl = ((pos.x() - 0) ** 2 + (pos.y() - 0) ** 2) ** 0.5
+        if dist_tl < radius:
+            return "TL"
+        
+        # Top-right corner
+        dist_tr = ((pos.x() - width) ** 2 + (pos.y() - 0) ** 2) ** 0.5
+        if dist_tr < radius:
+            return "TR"
+        
+        # Bottom-left corner
+        dist_bl = ((pos.x() - 0) ** 2 + (pos.y() - height) ** 2) ** 0.5
+        if dist_bl < radius:
+            return "BL"
+        
+        # Bottom-right corner
+        dist_br = ((pos.x() - width) ** 2 + (pos.y() - height) ** 2) ** 0.5
+        if dist_br < radius:
+            return "BR"
+        
+        return None
+
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             # The dialog is modal, so this event shouldn't fire when it's open,
             # but this is a good safeguard.
             if self.overlay.isHidden():
                 self.overlay.resize(self.container.size())
+                # Position overlay at bottom-center of window in windowed mode,
+                # otherwise position it at the monitor bottom
+                if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+                    self._position_overlay_at_window_bottom()
+                else:
+                    self._position_overlay_at_monitor_bottom()
                 self.overlay.fade_in()
                 event.accept()
         elif event.button() == Qt.LeftButton:
             if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
-                self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
-            event.accept()
+                # Check if click is on a corner (for resizing)
+                corner = self._get_corner_at_position(event.pos())
+                if corner:
+                    self.resize_corner = corner
+                    self.resize_start_rect = self.geometry()
+                    self.resize_start_pos = event.globalPos()
+                    event.accept()
+                else:
+                    # Regular window drag from anywhere in the window
+                    self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+                    event.accept()
+            else:
+                event.accept()
         else:
             # Pass other clicks to the parent
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self.drag_pos:
-            if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
-                self.move(event.globalPos() - self.drag_pos)
-            event.accept()
+        if event.buttons() == Qt.LeftButton:
+            if self.resize_corner:
+                # Handle window resizing based on corner
+                current_global_pos = event.globalPos()
+                delta_x = current_global_pos.x() - self.resize_start_pos.x()
+                delta_y = current_global_pos.y() - self.resize_start_pos.y()
+                
+                min_width = 300
+                min_height = 300
+                
+                # Calculate new geometry based on which corner is being dragged
+                new_x = self.resize_start_rect.x()
+                new_y = self.resize_start_rect.y()
+                new_width = self.resize_start_rect.width()
+                new_height = self.resize_start_rect.height()
+                
+                if self.resize_corner == "BR":
+                    # Bottom-right: only width and height change
+                    new_width = max(min_width, self.resize_start_rect.width() + delta_x)
+                    new_height = max(min_height, self.resize_start_rect.height() + delta_y)
+                elif self.resize_corner == "BL":
+                    # Bottom-left: x and width change left, height changes bottom
+                    new_x = self.resize_start_rect.x() + delta_x
+                    new_width = max(min_width, self.resize_start_rect.width() - delta_x)
+                    new_height = max(min_height, self.resize_start_rect.height() + delta_y)
+                elif self.resize_corner == "TR":
+                    # Top-right: y and height change up, width changes right
+                    new_y = self.resize_start_rect.y() + delta_y
+                    new_width = max(min_width, self.resize_start_rect.width() + delta_x)
+                    new_height = max(min_height, self.resize_start_rect.height() - delta_y)
+                elif self.resize_corner == "TL":
+                    # Top-left: x,y and both width,height change
+                    new_x = self.resize_start_rect.x() + delta_x
+                    new_y = self.resize_start_rect.y() + delta_y
+                    new_width = max(min_width, self.resize_start_rect.width() - delta_x)
+                    new_height = max(min_height, self.resize_start_rect.height() - delta_y)
+                
+                # Just set geometry without updating layout - layout update happens in mouseReleaseEvent
+                self.setGeometry(new_x, new_y, new_width, new_height)
+                # If overlay is visible, keep it anchored to the bottom-center of the window
+                if self.overlay and self.overlay.isVisible():
+                    # Only use window-bottom positioning for windowed mode
+                    if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+                        self._position_overlay_at_window_bottom()
+                    else:
+                        self._position_overlay_at_monitor_bottom()
+                event.accept()
+            elif self.drag_pos:
+                # Handle window dragging
+                if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+                    self.move(event.globalPos() - self.drag_pos)
+                event.accept()
+            else:
+                super().mouseMoveEvent(event)
         else:
+            # Update cursor when hovering over corners
+            if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+                corner = self._get_corner_at_position(event.pos())
+                if corner == "TL" or corner == "BR":
+                    self.setCursor(Qt.SizeFDiagCursor)
+                elif corner == "TR" or corner == "BL":
+                    self.setCursor(Qt.SizeBDiagCursor)
+                else:
+                    self.setCursor(Qt.ArrowCursor)
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # Update layout only after resize is complete (not during dragging)
+        if self.resize_corner:
+            self.update_layout()
+            # If overlay visible, ensure it's repositioned after the final resize
+            if self.overlay and self.overlay.isVisible():
+                if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+                    self._position_overlay_at_window_bottom()
+                else:
+                    self._position_overlay_at_monitor_bottom()
         self.drag_pos = None
+        self.resize_corner = None
+        self.resize_start_rect = None
+        self.resize_start_pos = None
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
@@ -1928,12 +2124,35 @@ class SpotifyPlayer(QMainWindow):
                 self.update_layout()
             elif self.is_fullscreen:
                 self.is_fullscreen = False
-                if not (self.windowState() & Qt.WindowFullScreen):
-                    self.setWindowFlags(Qt.FramelessWindowHint)
-                self.showNormal()
+                # Windowed mode: use frameless to remove decorations, but keep our custom drag/resize
+                self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowSystemMenuHint)
+                # Set a reasonable windowed size (80% of screen)
+                screen = QApplication.screenAt(self.geometry().center())
+                if not screen:
+                    screens = QApplication.screens()
+                    if screens: screen = screens[0]
+                if screen:
+                    screen_geo = screen.availableGeometry()
+                    new_width = int(screen_geo.width() * 0.8)
+                    new_height = int(screen_geo.height() * 0.8)
+                    new_x = screen_geo.x() + (screen_geo.width() - new_width) // 2
+                    new_y = screen_geo.y() + (screen_geo.height() - new_height) // 2
+                    self.setGeometry(new_x, new_y, new_width, new_height)
+                self.show()
+                self.update_layout()
             else:
                 self.is_fullscreen = True
+                # Get the screen and set geometry to fill it completely
+                screen = QApplication.screenAt(self.geometry().center())
+                if not screen:
+                    screens = QApplication.screens()
+                    if screens: screen = screens[0]
+                if screen:
+                    # Set window flags first, then geometry, then show fullscreen
+                    self.setWindowFlags(Qt.FramelessWindowHint)
+                    self.setGeometry(screen.geometry())
                 self.showFullScreen()
+                self.update_layout()
         elif event.key() == Qt.Key_F11:
             if self.is_wallpaper_mode:
                 return

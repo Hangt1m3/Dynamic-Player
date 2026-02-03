@@ -948,25 +948,27 @@ class ColorEditorDialog(QDialog):
         controls_tab_layout.addWidget(controls_scroll)
         self.tab_widget.addTab(controls_tab, "Shortcuts")
 
-        controls = {
-            "F": "Toggle fullscreen mode.",
-            "F11": "Toggle multi-monitor spanning mode.",
-            "F12": "Toggle wallpaper mode (places behind icons).",
-            "L": "Toggle Govee light synchronization.",
-            "C": "Open this settings panel.",
-            "← / →": "Shift player to adjacent monitor.",
-            "Esc": "Close the application."
-        }
+        controls = [
+            ("F", "Toggle fullscreen mode."),
+            ("F11", "Toggle multi-monitor spanning mode."),
+            ("F12", "Toggle wallpaper mode (places behind icons)."),
+            ("L", "Toggle Govee light synchronization."),
+            ("C", "Open this settings panel."),
+            ("← / →", "Shift player to adjacent monitor."),
+            ("Esc", "Close the application.")
+        ]
 
         row = 0
-        for key, desc in controls.items():
+        for key, desc in controls:
             key_label = self._create_dynamic_label(f"<b>{key}</b>", is_html_or_wrapped=True)
             key_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            key_label.setFixedWidth(80) # Fixed width for keys column
+            key_label.setFixedWidth(100)  # Increased width for better visibility
+            key_label.setMinimumHeight(32)  # Better vertical spacing
             
             desc_label = self._create_dynamic_label(desc, is_html_or_wrapped=True)
             desc_label.setWordWrap(True)
             desc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            desc_label.setMinimumHeight(32)  # Better vertical spacing
             
             controls_layout.addWidget(key_label, row, 0)
             controls_layout.addWidget(desc_label, row, 1)
@@ -1050,16 +1052,11 @@ class ColorEditorDialog(QDialog):
         self.reset_text_border_enable_btn = QPushButton("Auto")
         self.reset_text_border_enable_btn.setToolTip("Reset to automatic border detection based on contrast")
         self.reset_text_border_enable_btn.clicked.connect(self.reset_text_border_enable)
-
-        self.force_off_border_btn = QPushButton("Off")
-        self.force_off_border_btn.setToolTip("Force text border OFF for this album")
-        self.force_off_border_btn.clicked.connect(lambda: self.text_border_checkbox.setChecked(False))
         
         border_enable_widget = QWidget()
         border_enable_layout = QHBoxLayout(border_enable_widget)
         border_enable_layout.setContentsMargins(0,0,0,0)
         border_enable_layout.addWidget(self.text_border_checkbox)
-        border_enable_layout.addWidget(self.force_off_border_btn)
         border_enable_layout.addWidget(self.reset_text_border_enable_btn)
         border_enable_layout.addStretch()
 
@@ -1726,7 +1723,7 @@ class ColorEditorDialog(QDialog):
         
         # 2. Update Custom Tab Bar Colors
         if hasattr(self, 'custom_tab_bar'):
-            self.custom_tab_bar.setColors(self.ui_text_color, self.ui_bg_color)
+            self.custom_tab_bar.setColors(self.ui_text_color, self.ui_bg_color, self.text_border_color, self.text_border_checkbox.isChecked())
 
         # 3. FIX: Update Govee Table Styling (White Rectangle Fix)
         if hasattr(self, 'govee_device_table'):
@@ -1763,18 +1760,23 @@ class ColorEditorDialog(QDialog):
             self.govee_device_table.setStyleSheet(table_style)
 
     def _update_blob_buttons_style(self):
-        # High contrast style for blob buttons to ensure they are visible
+        # Use the regular button theme for consistency with other buttons in settings
+        btn_bg = self.ui_bg_color.lighter(130).name()
+        btn_hover = self.ui_accent_color.name()
+        txt_col = self.ui_text_color.name()
+        
         btn_style = f"""
             QPushButton {{
-                background-color: {self.ui_accent_color.name()};
-                color: {self.ui_bg_color.name()};
-                border: 1px solid {self.ui_text_color.name()};
+                background-color: {btn_bg};
+                color: {txt_col};
+                border: 1px solid #555;
                 border-radius: 4px;
-                font-weight: bold;
-                font-size: 16px;
+                padding: 4px 12px;
+                min-width: 40px;
+                min-height: 20px;
             }}
             QPushButton:hover {{
-                background-color: {self.ui_text_color.name()};
+                background-color: {btn_hover};
                 color: {self.ui_bg_color.name()};
             }}
         """
@@ -2553,8 +2555,9 @@ class ColorEditorDialog(QDialog):
 
     # [UPDATE THIS METHOD]
     def export_theme(self, album_id, data):
-        # Sanitize filename
-        safe_name = "".join(c for c in data.get("meta_album", "theme") if c.isalnum() or c in (' ', '-', '_')).strip()
+        # Use the album name as the filename
+        album_name = data.get("meta_album", "theme")
+        safe_name = "".join(c for c in album_name if c.isalnum() or c in (' ', '-', '_')).strip()
         if not safe_name: safe_name = "theme"
         
         filename, _ = FramelessFileDialog(self, "Export Theme", f"{safe_name}.json", "JSON Files (*.json)",

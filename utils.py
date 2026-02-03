@@ -121,8 +121,17 @@ def extract_palette_from_image(pil_img, num_lights=3, sample_size=150):
 
     scored_colors = []
     for i in sorted_indices:
-        center_color = kmeans.cluster_centers_[i]
-        r, g, b = center_color
+        # Find the actual pixel color closest to this cluster center (not the average)
+        cluster_mask = kmeans.labels_ == i
+        cluster_pixels = arr[cluster_mask]
+        cluster_center = kmeans.cluster_centers_[i]
+        
+        # Find the exact color from the image that is closest to the cluster center
+        distances = np.linalg.norm(cluster_pixels - cluster_center, axis=1)
+        closest_pixel_idx = np.argmin(distances)
+        exact_color = cluster_pixels[closest_pixel_idx]
+        
+        r, g, b = exact_color
         h, s, l = rgb_to_hsl(r, g, b)
         dominance = counts[i] / len(arr)
         primary_score = dominance * 2.0
@@ -132,7 +141,7 @@ def extract_palette_from_image(pil_img, num_lights=3, sample_size=150):
         if s > 0.4: primary_score *= 0.6
         accent_score = s * 3.0 + dominance * 1.0
         if l < 0.2 or l > 0.8: accent_score *= 0.4
-        scored_colors.append({"color": center_color.astype(int).tolist(), "primary_score": primary_score, "accent_score": accent_score, "h": h, "s": s, "l": l, "dominance": dominance})
+        scored_colors.append({"color": exact_color.astype(int).tolist(), "primary_score": primary_score, "accent_score": accent_score, "h": h, "s": s, "l": l, "dominance": dominance})
 
     scored_colors.sort(key=lambda x: x["primary_score"], reverse=True)
     best_primary = scored_colors[0]

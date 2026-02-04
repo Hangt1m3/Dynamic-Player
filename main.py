@@ -523,14 +523,14 @@ class SpotifyPlayer(QMainWindow):
             op_anim.setDuration(800)
             op_anim.setStartValue(0.0)
             op_anim.setEndValue(1.0)
-            op_anim.setEasingCurve(EASING_OUT)
+            op_anim.setEasingCurve(QEasingCurve.Linear)
             
             # Slide In (From Left) - start at -40.0 offset
             slide_anim = QPropertyAnimation(target, b"anim_offset_x")
             slide_anim.setDuration(800)
             slide_anim.setStartValue(-40.0)
             slide_anim.setEndValue(0.0)
-            slide_anim.setEasingCurve(EASING_OUT)
+            slide_anim.setEasingCurve(QEasingCurve.OutCubic)
             
             if delay > 0:
                 seq_op = QSequentialAnimationGroup()
@@ -557,14 +557,14 @@ class SpotifyPlayer(QMainWindow):
             slide_out.setDuration(800)
             slide_out.setStartValue(0.0)
             slide_out.setEndValue(-40.0)
-            slide_out.setEasingCurve(EASING_OUT)
+            slide_out.setEasingCurve(QEasingCurve.InCubic)
 
             # Opacity - fade to transparent
             op_out = QPropertyAnimation(target, b"opacity")
             op_out.setDuration(800)
             op_out.setStartValue(1.0)
             op_out.setEndValue(0.0)
-            op_out.setEasingCurve(EASING_OUT)
+            op_out.setEasingCurve(QEasingCurve.Linear)
 
             if delay > 0:
                 seq_slide = QSequentialAnimationGroup()

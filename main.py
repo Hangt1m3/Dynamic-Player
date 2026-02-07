@@ -16,6 +16,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QBoxLayout, QVBoxLayout, 
+    QHBoxLayout,
     QGraphicsDropShadowEffect, QSizePolicy, QSystemTrayIcon, QMenu, QDialog
 )
 from PyQt5.QtGui import (
@@ -28,7 +29,7 @@ from config import SPOTIPY_REDIRECT_URI, SPOTIFY_SCOPE, SPOTIFY_GREEN
 from utils import resource_path
 from services import ColorCache, GoveeController
 from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, IS_WINDOWS
-from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel
+from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, CircularButton
 from utils import get_best_text_color, get_best_border_color
 from ui.overlays import OverlayWidget, NotificationWidget
 from ui.dialogs import ColorEditorDialog, SpotifySetupDialog, ThemedMessageBox
@@ -173,7 +174,9 @@ class SpotifyPlayer(QMainWindow):
         QTimer.singleShot(2500, self._setup_settings_dialog)
         self._load_fonts()
 
-        self.overlay = OverlayWidget(self.container)
+        # Create overlay as a top-level widget so it can be positioned
+        # either relative to the player window or to the monitor independently.
+        self.overlay = OverlayWidget(None)
         self.overlay.hide()
         self.overlay.settings_button.clicked.connect(self.open_settings_dialog)
         self.overlay.lights_button.clicked.connect(self.toggle_lights)
@@ -184,6 +187,8 @@ class SpotifyPlayer(QMainWindow):
         # Show an initial idle screen.
         QTimer.singleShot(100, self._show_idle_screen)
 
+        # Titlebar control buttons (min/max/close) for windowed mode
+        self._create_titlebar_buttons()
     def _check_for_first_run(self):
         """Shows a welcome message with instructions on the first launch."""
         settings = QSettings("SpotifySync", "App")
@@ -608,6 +613,19 @@ class SpotifyPlayer(QMainWindow):
         self.art_scale_anim.setEndValue(1.0)
         self.art_scale_anim.setEasingCurve(EASING_OUT)
 
+        # Button color animation - connect to text_color_anim to fade button colors with text
+        self.text_color_anim.valueChanged.connect(self._on_text_color_anim_update)
+
+    def _on_text_color_anim_update(self, color):
+        """Called during text color animation to also update button colors proportionally."""
+        try:
+            if not hasattr(self, '_btn_accent_color'):
+                return
+            # Update button colors based on animation progress, using the animated color
+            self._update_titlebar_button_theme(animated_text_color=color)
+        except Exception:
+            pass
+
     def _setup_tray_icon(self):
         """Initializes the system tray icon and its context menu."""
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -948,7 +966,9 @@ class SpotifyPlayer(QMainWindow):
         self._update_blobs() 
         border_color = QColor(*self._current_ui_palette[1]) if len(self._current_ui_palette) > 1 else primary_qcolor.lighter(150)
         self.art.setBorderColor(border_color)
-        
+        try: self._update_titlebar_button_theme()
+        except Exception: pass
+
         self.progress_bar.set_color(new_text_rgb)
         if self._current_progress_bar_enabled and self.active_media_source == 'spotify':
             self.progress_bar.fade_in()
@@ -1102,7 +1122,9 @@ class SpotifyPlayer(QMainWindow):
         self.art.setBorderColor(border_color)
         self._old_bg_color = self._current_bg_color
         self._current_bg_color = primary_qcolor
-        
+        try: self._update_titlebar_button_theme()
+        except Exception: pass
+
         self.progress_bar.set_color(text_rgb)
         if self._current_progress_bar_enabled and self.active_media_source == 'spotify':
             self.progress_bar.fade_in()
@@ -1472,8 +1494,17 @@ class SpotifyPlayer(QMainWindow):
         if self.blob_manager:
             self.blob_manager.resize(self.size())
 
-        if hasattr(self, 'overlay'):
-            self.overlay.resize(self.container.size())
+        # Reposition overlay (top-level) so it stays bottom-center of the window
+        if hasattr(self, 'overlay') and self.overlay:
+            if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+                # Position relative to the player window (global coords)
+                self._position_overlay_at_window_bottom()
+            else:
+                # Position relative to the monitor
+                self._position_overlay_at_monitor_bottom()
+
+        # Ensure titlebar buttons remain anchored
+        self._position_titlebar_buttons()
 
         self._bg_crossfade_lerp = 1.0 
         self.update()
@@ -1939,6 +1970,125 @@ class SpotifyPlayer(QMainWindow):
             y = monitor_geo.bottom() - overlay_height - 60  # 60 pixel margin from bottom
             self.overlay.move(x, y)
 
+    def _position_overlay_at_monitor_bottom(self):
+        """Position the overlay centered at the bottom of the current monitor."""
+        # For top-level overlay (parent=None) this uses global coordinates.
+        monitor_geo = None
+        if self.multi_monitor_mode and self.target_monitor_geo:
+            monitor_geo = self.target_monitor_geo
+        else:
+            screen = QApplication.screenAt(self.geometry().center())
+            if screen:
+                monitor_geo = screen.geometry()
+            else:
+                screens = QApplication.screens()
+                if screens:
+                    monitor_geo = screens[0].geometry()
+
+        if monitor_geo:
+            overlay_width = self.overlay.width()
+            overlay_height = self.overlay.height()
+            x = monitor_geo.left() + (monitor_geo.width() - overlay_width) // 2
+            y = monitor_geo.bottom() - overlay_height - 60
+            self.overlay.move(x, y)
+
+    def _create_titlebar_buttons(self):
+        """Create circular minimize/maximize/close buttons (windowed mode).
+        Buttons are parented to the main window and positioned in _position_titlebar_buttons().
+        Uses image-based icons with color tinting.
+        """
+        try:
+            # Container to hold the buttons
+            self.titlebar_btn_container = QWidget(self)
+            self.titlebar_btn_container.setAttribute(Qt.WA_TranslucentBackground)
+            hl = QHBoxLayout(self.titlebar_btn_container)
+            hl.setContentsMargins(6, 6, 6, 6)
+            hl.setSpacing(6)
+
+            # Get image paths relative to the application
+            minimize_img = resource_path("images/minimize.png")
+            maximize_img = resource_path("images/maximize.png")
+            close_img = resource_path("images/close.png")
+
+            self.btn_min = CircularButton(tooltip="Minimize", image_path=minimize_img)
+            self.btn_max = CircularButton(tooltip="Maximize", image_path=maximize_img)
+            self.btn_close = CircularButton(tooltip="Close", image_path=close_img)
+
+            for b in (self.btn_min, self.btn_max, self.btn_close):
+                b.setFocusPolicy(Qt.NoFocus)
+                b.setFixedSize(28, 28)  # Smaller button size
+                hl.addWidget(b)
+
+            # Track button colors for animation
+            self._btn_accent_color = QColor(40, 40, 40)
+            self._btn_accent_color_old = QColor(40, 40, 40)
+
+            # Minimize now triggers Notification Only Mode to match user request
+            self.btn_min.clicked.connect(self.toggle_notification_only_mode)
+            self.btn_max.clicked.connect(self._on_titlebar_maximize_restore)
+            self.btn_close.clicked.connect(self.close)
+
+            # Initialize theme once
+            try: self._update_titlebar_button_theme()
+            except Exception: pass
+
+            self.titlebar_btn_container.hide()
+        except Exception:
+            pass
+
+    def _position_titlebar_buttons(self):
+        """Position the titlebar buttons in the top-right of the window (windowed mode).
+        Uses widget-local coordinates since buttons are parented to `self`.
+        """
+        if not hasattr(self, 'titlebar_btn_container'): return
+        if self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode:
+            self.titlebar_btn_container.hide()
+            return
+
+        self.titlebar_btn_container.adjustSize()
+        container_w = self.titlebar_btn_container.width()
+        container_h = self.titlebar_btn_container.height()
+        margin = 12
+        x = max(8, self.width() - container_w - margin)
+        y = margin
+        self.titlebar_btn_container.move(x, y)
+        self.titlebar_btn_container.show()
+
+    def _on_titlebar_maximize_restore(self):
+        # Toggle fullscreen/windowed similar to pressing F
+        if self.is_wallpaper_mode:
+            return
+
+        if self.is_fullscreen:
+            # Restore to windowed frameless (approximate previous size)
+            self.is_fullscreen = False
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowSystemMenuHint)
+            screen = QApplication.screenAt(self.geometry().center())
+            if not screen:
+                screens = QApplication.screens()
+                if screens: screen = screens[0]
+            if screen:
+                screen_geo = screen.availableGeometry()
+                new_width = int(screen_geo.width() * 0.8)
+                new_height = int(screen_geo.height() * 0.8)
+                new_x = screen_geo.x() + (screen_geo.width() - new_width) // 2
+                new_y = screen_geo.y() + (screen_geo.height() - new_height) // 2
+                self.setGeometry(new_x, new_y, new_width, new_height)
+            self.show()
+            self.update_layout()
+        else:
+            # Maximize to fullscreen
+            self.is_fullscreen = True
+            screen = QApplication.screenAt(self.geometry().center())
+            if not screen:
+                screens = QApplication.screens()
+                if screens: screen = screens[0]
+            if screen:
+                self.setWindowFlags(Qt.FramelessWindowHint)
+                self.setGeometry(screen.geometry())
+            self.showFullScreen()
+            self.update_layout()
+
     def _position_overlay_at_window_bottom(self):
         """Position the overlay centered at the bottom of the player window.
         This keeps the overlay inside the window bounds and updates while resizing.
@@ -1961,6 +2111,53 @@ class SpotifyPlayer(QMainWindow):
             y = win_geo.top()
 
         self.overlay.move(x, y)
+
+    def _update_titlebar_button_theme(self, animated_text_color=None):
+        """Update the titlebar buttons' visual theme based on current UI palette.
+        Uses the second palette color when available, otherwise derives from
+        the current background color. If animated_text_color is provided (during animation),
+        uses that for smooth color fading.
+        
+        For image-based icons, applies color tinting to match the text color.
+        """
+        if not hasattr(self, 'btn_min'):
+            return
+        try:
+            # Choose accent color
+            if getattr(self, '_current_ui_palette', None) and len(self._current_ui_palette) > 1:
+                accent = QColor(*self._current_ui_palette[1])
+            else:
+                accent = self._current_bg_color.lighter(120) if hasattr(self, '_current_bg_color') else QColor(40, 40, 40)
+
+            # Text color: use animated color if provided (during animation), otherwise use current text color
+            if animated_text_color is not None and isinstance(animated_text_color, QColor):
+                txt = animated_text_color
+            else:
+                try:
+                    txt = QColor(*self._current_text_color)
+                except Exception:
+                    txt = QColor(255, 255, 255)
+
+            # Build stylesheet for circular buttons with semi-transparent background (0.45)
+            bg_rgba = f"rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.45)"
+            txt_name = txt.name()
+
+            base_style = f"""
+                QPushButton {{ background-color: {bg_rgba}; border: none; border-radius: 14px; color: {txt_name}; }}
+                QPushButton:hover {{ background-color: rgba(255,255,255,0.15); }}
+            """
+
+            # Apply same style to all buttons (min, max, and close)
+            self.btn_min.setStyleSheet(base_style)
+            self.btn_max.setStyleSheet(base_style)
+            self.btn_close.setStyleSheet(base_style)
+            
+            # Apply color tinting to image-based icons
+            for btn in (self.btn_min, self.btn_max, self.btn_close):
+                if hasattr(btn, 'set_icon_color'):
+                    btn.set_icon_color(txt)
+        except Exception:
+            pass
 
     def _get_corner_at_position(self, pos):
         """
@@ -1998,10 +2195,12 @@ class SpotifyPlayer(QMainWindow):
         if event.button() == Qt.RightButton:
             # The dialog is modal, so this event shouldn't fire when it's open,
             # but this is a good safeguard.
-            if self.overlay.isHidden():
-                self.overlay.resize(self.container.size())
-                # Position overlay at bottom-center of window in windowed mode,
-                # otherwise position it at the monitor bottom
+            # Toggle overlay visibility on right-click of the player window
+            if self.overlay.isVisible():
+                self.overlay.fade_out()
+                event.accept()
+            else:
+                # Position overlay appropriately and show
                 if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
                     self._position_overlay_at_window_bottom()
                 else:
@@ -2069,7 +2268,6 @@ class SpotifyPlayer(QMainWindow):
                 self.setGeometry(new_x, new_y, new_width, new_height)
                 # If overlay is visible, keep it anchored to the bottom-center of the window
                 if self.overlay and self.overlay.isVisible():
-                    # Only use window-bottom positioning for windowed mode
                     if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
                         self._position_overlay_at_window_bottom()
                     else:

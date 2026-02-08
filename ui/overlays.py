@@ -7,17 +7,8 @@ from .widgets import CircularButton, ScrollingTextLabel
 
 class OverlayWidget(QWidget):
     def __init__(self, parent=None):
-        # Create as a top-level, frameless, always-on-top tool window that
-        # does not take focus. This keeps the overlay visible above the player
-        # while allowing clicks to pass to the main window when appropriate.
         super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        # Make the overlay ignore mouse events on its transparent background so
-        # clicks fall through to the player. Child widgets (buttons) will
-        # explicitly accept mouse events so they remain clickable.
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
@@ -29,9 +20,6 @@ class OverlayWidget(QWidget):
         self.layout.setAlignment(Qt.AlignBottom | Qt.AlignHCenter)
         
         button_container = QWidget()
-        # Ensure button container accepts mouse events (it is a child of a
-        # top-level overlay that ignores background clicks).
-        button_container.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         button_container.setStyleSheet("background-color: rgba(0,0,0,0.3); border-radius: 35px;")
         container_layout = QHBoxLayout(button_container)
         container_layout.setContentsMargins(20, 10, 20, 10)
@@ -58,11 +46,7 @@ class OverlayWidget(QWidget):
         # allowing arrow keys and other binds to keep working.
         buttons = [self.settings_button, self.lights_button, self.multi_monitor_button, 
                    self.wallpaper_button, self.notif_mode_button]
-        for btn in buttons:
-            btn.setFocusPolicy(Qt.NoFocus)
-            # Ensure buttons receive mouse events even though the parent overlay
-            # is transparent for input.
-            btn.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        for btn in buttons: btn.setFocusPolicy(Qt.NoFocus)
         
         container_layout.addWidget(self.settings_button)
         container_layout.addWidget(self.lights_button)
@@ -91,9 +75,15 @@ class OverlayWidget(QWidget):
         self.opacity_animation.setEndValue(0.0)
         self.opacity_animation.start()
 
-    # Background clicks are intentionally ignored so they pass through to the
-    # main player window. Buttons handle their own clicks. No mousePressEvent
-    # override is required here.
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            if self.childAt(event.pos()) is None:
+                self.fade_out()
+                event.accept()
+            else:
+                super().mousePressEvent(event)
+        else:
+            super().mousePressEvent(event)
 
 class NotificationContent(QWidget):
     def __init__(self, parent=None):

@@ -5,7 +5,7 @@ from PyQt5.QtCore import (Qt, pyqtProperty, pyqtSignal, QObject, QPointF, QRectF
                           QPropertyAnimation, QEasingCurve, QTimer, QParallelAnimationGroup, QRect, QEvent)
 from PyQt5.QtWidgets import (QLabel, QProgressBar, QGraphicsOpacityEffect, QSizePolicy, QWidget, 
                              QPushButton, QComboBox, QGroupBox, QCheckBox, QRadioButton, QAbstractButton)
-from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase, QIcon)
+from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase)
 from PyQt5.QtWidgets import QStyledItemDelegate
 class BlobManager:
     """Manages the positions and properties of all blobs to prevent overlap."""
@@ -502,140 +502,34 @@ class NoScrollComboBox(QComboBox):
     def wheelEvent(self, event): event.ignore()
 
 class CircularButton(QPushButton):
-    def __init__(self, tooltip="", icon_char="", font_size=18, image_path=None, parent=None):
+    def __init__(self, tooltip="", icon_char="", parent=None):
         super().__init__("", parent)
         self.setFixedSize(50, 50)
         self.setToolTip(tooltip)
-        self.icon_char = icon_char
-        self.icon_font_size = font_size
-        self.image_path = image_path
-        self._original_pixmap = None
-        self._tinted_color = QColor(255, 255, 255)
-        self._icon_visible = False
         
-        # Don't show text initially - only show on hover
-        self.setText("")
-        
-        # Load original image if provided
-        if image_path:
-            try:
-                self._original_pixmap = QPixmap(image_path)
-                # Don't show icon yet - only show on hover
-            except Exception:
-                pass
-        
-        # Set font for when icon is shown (fallback for text-based mode)
-        if icon_char and not image_path:
+        # Set icon character (emoji or symbol)
+        if icon_char:
+            self.setText(icon_char)
             font = self.font()
-            font.setPointSize(font_size)
+            font.setPointSize(18)
             self.setFont(font)
         
-        # Remove borders, no hover state change needed since icon appears on hover
         self.setStyleSheet("""
             QPushButton { 
                 background-color: rgba(20, 20, 20, 0.6); 
-                border: none; 
+                border: 1px solid rgba(255, 255, 255, 0.7); 
                 border-radius: 25px; 
                 color: white; 
                 font-weight: bold;
             }
             QPushButton:hover { 
                 background-color: rgba(40, 40, 40, 0.8); 
+                border: 1px solid white; 
             }
             QPushButton:pressed { 
                 background-color: rgba(0, 0, 0, 0.6); 
             }
         """)
-
-    def set_icon_color(self, color):
-        """
-        Tint the image icon to the specified color (QColor or RGB tuple).
-        If using text icon, updates the stylesheet color.
-        This updates the color but respects current visibility state.
-        """
-        if isinstance(color, (tuple, list)):
-            color = QColor(*color)
-        
-        self._tinted_color = color
-        
-        if self._original_pixmap and not self._original_pixmap.isNull():
-            # Tint the image to the target color and update it if currently visible
-            tinted = self._tint_pixmap(self._original_pixmap, color)
-            icon = QIcon(tinted)
-            self.setIcon(icon)
-            self.setIconSize(QSize(24, 24))
-        elif self.icon_char:
-            # Fallback: update text color via stylesheet
-            base_style = f"""
-                QPushButton {{ 
-                    background-color: rgba(20, 20, 20, 0.6); 
-                    border: none; 
-                    border-radius: 25px; 
-                    color: {color.name()}; 
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{ 
-                    background-color: rgba(40, 40, 40, 0.8); 
-                }}
-                QPushButton:pressed {{ 
-                    background-color: rgba(0, 0, 0, 0.6); 
-                }}
-            """
-            self.setStyleSheet(base_style)
-    
-    def _show_icon(self):
-        """Show the icon (for image-based buttons)"""
-        if self.image_path and self._original_pixmap and not self._original_pixmap.isNull():
-            # Ensure icon is tinted and visible
-            tinted = self._tint_pixmap(self._original_pixmap, self._tinted_color)
-            icon = QIcon(tinted)
-            self.setIcon(icon)
-            self.setIconSize(QSize(24, 24))
-            self._icon_visible = True
-    
-    def _hide_icon(self):
-        """Hide the icon (for image-based buttons)"""
-        if self.image_path:
-            self.setIcon(QIcon())  # Clear the icon
-            self._icon_visible = False
-    
-    def _tint_pixmap(self, pixmap, target_color):
-        """
-        Tint a white-on-transparent pixmap to the specified color.
-        Works by using the original as a mask over the target color.
-        """
-        # Create a pixmap filled with the target color
-        tinted = QPixmap(pixmap.width(), pixmap.height())
-        tinted.fill(target_color)
-        
-        # Composite the original pixmap using DestinationIn:
-        # Keep only pixels where the source (original) is opaque
-        painter = QPainter(tinted)
-        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.end()
-        
-        return tinted
-
-    def enterEvent(self, event):
-        """Show icon when mouse enters button"""
-        if self.image_path:
-            # Show image icon when hovering
-            self._show_icon()
-        else:
-            # Show text icon when hovering
-            self.setText(self.icon_char)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        """Hide icon when mouse leaves button"""
-        if self.image_path:
-            # Hide image icon when not hovering
-            self._hide_icon()
-        else:
-            # Hide text icon when not hovering
-            self.setText("")
-        super().leaveEvent(event)
 
 # --- NEW ADDITIONS BELOW ---
 

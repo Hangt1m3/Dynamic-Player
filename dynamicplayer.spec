@@ -19,7 +19,6 @@ a = Analysis(
     datas=[
         ('icon.ico', '.'),
         ('sounds', 'sounds'), # <--- ADDED THIS LINE: Bundles the sounds folder
-        ('images', 'images'), # <--- ADDED THIS LINE: Bundles the images folder
         # ('fonts', 'fonts'), # Uncomment if you have a physical fonts folder
     ],
     # 3. Combine the hidden imports

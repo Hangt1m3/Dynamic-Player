@@ -519,11 +519,7 @@ class ColorEditorDialog(QDialog):
     def _create_dynamic_label(self, text, is_html_or_wrapped=False):
         # Use BorderedLabel for simple text to get the effect, standard QLabel for HTML/Wrap to avoid broken rendering
         lbl = QLabel(text) if is_html_or_wrapped else BorderedLabel(text)
-        if is_html_or_wrapped:
-            lbl.setTextFormat(Qt.RichText)
-        else:
-            self.ui_labels.append(lbl)
-            lbl.setCustomTextColor(self.ui_text_color)
+        if not is_html_or_wrapped: self.ui_labels.append(lbl); lbl.setCustomTextColor(self.ui_text_color)
         return lbl
 
     def _ui_build_steps(self):
@@ -1495,7 +1491,7 @@ class ColorEditorDialog(QDialog):
         opacity_anim.setDuration(duration); opacity_anim.setStartValue(self.windowOpacity()); opacity_anim.setEndValue(0.0); opacity_anim.setEasingCurve(QEasingCurve.OutQuad)
         
         pos_anim = QPropertyAnimation(self, b"pos")
-        pos_anim.setDuration(duration); pos_anim.setStartValue(current_pos); pos_anim.setEndValue(target_pos); pos_anim.setEasingCurve(QEasingCurve.InCubic)
+        pos_anim.setDuration(duration); pos_anim.setStartValue(current_pos); pos_anim.setEndValue(target_pos); pos_anim.setEasingCurve(QEasingCurve.InExpo)
 
         if anim_type == "Fade":
             self.exit_anim_group.addAnimation(opacity_anim)

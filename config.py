@@ -1,6 +1,6 @@
 # config.py
 SPOTIPY_REDIRECT_URI = "http://127.0.0.1:8888/"
-SPOTIFY_SCOPE = "user-read-playback-state user-read-currently-playing"
+SPOTIFY_SCOPE = "user-read-playback-state user-read-currently-playing user-modify-playback-state user-library-read"
 
 # Default values
 SPOTIFY_GREEN = [29, 185, 84]

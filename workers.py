@@ -206,6 +206,10 @@ class SpotifyPollingWorker(QRunnable):
     def run(self):
         while self.is_running:
             try:
+                if not self.sp:
+                    # Spotify not configured, wait and continue
+                    if not self._sleep(5000): return
+                    continue
                 data = self.sp.current_playback()
                 if not data or not data.get("item"):
                     if self.current_track_id is not None: self.current_track_id = None; self.signals.no_playback.emit()

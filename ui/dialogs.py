@@ -72,10 +72,18 @@ class ThemedMessageBox(ThemedDialog):
 # ... [Include SaveConfirmationDialog, FramelessColorDialog, FramelessFileDialog here] ...
 
 class SpotifySetupDialog(ThemedDialog):
+    SKIP_CODE = 2  # Custom code for skip action
+    
     def __init__(self, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
         super().__init__(parent, "Spotify API Setup", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Info text
+        info_label = QLabel("Enter your Spotify API credentials or skip to continue without Spotify:")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
         id_label = QLabel("Client ID:"); secret_label = QLabel("Client Secret:")
         self.id_input = QLineEdit(); self.secret_input = QLineEdit()
         self.id_input.setEchoMode(QLineEdit.Password);self.secret_input.setEchoMode(QLineEdit.Password)
@@ -89,9 +97,10 @@ class SpotifySetupDialog(ThemedDialog):
         layout.addLayout(form_layout);
         
         btn_layout = QHBoxLayout()
+        skip_btn = QPushButton("Skip"); skip_btn.clicked.connect(self.skip)
         save_btn = QPushButton("Save"); save_btn.setDefault(True); save_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
-        btn_layout.addStretch();btn_layout.addWidget(cancel_btn);btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(skip_btn);btn_layout.addStretch();btn_layout.addWidget(cancel_btn);btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
         self.content_layout.addLayout(layout)
 
@@ -100,6 +109,10 @@ class SpotifySetupDialog(ThemedDialog):
         settings.setValue("spotify_client_id", self.id_input.text().strip())
         settings.setValue("spotify_client_secret", self.secret_input.text().strip())
         super().accept()
+    
+    def skip(self):
+        """Skip Spotify setup and continue without it."""
+        self.done(self.SKIP_CODE)
 
 # Important: FramelessColorDialog and FramelessFileDialog need to inherit similar painting logic as ThemedDialog.
 # Copy them from the original code exactly.

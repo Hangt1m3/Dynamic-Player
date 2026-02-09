@@ -1,7 +1,7 @@
 # ui/overlays.py
 import io
 from PyQt5.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, QPoint, QRectF
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QVBoxLayout, QGraphicsOpacityEffect
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QVBoxLayout, QGraphicsOpacityEffect, QSizePolicy
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QFontDatabase, QFontMetrics, QPixmap
 from .widgets import CircularButton, ScrollingTextLabel
 
@@ -9,19 +9,29 @@ class OverlayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.NoFocus)
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self.opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
         self.opacity_animation.setDuration(250)
         self.opacity_animation.setEasingCurve(QEasingCurve.OutCubic)
-        self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 60)
-        self.layout.setSpacing(20)
-        self.layout.setAlignment(Qt.AlignBottom | Qt.AlignHCenter)
         
-        button_container = QWidget()
-        button_container.setStyleSheet("background-color: rgba(0,0,0,0.3); border-radius: 35px;")
-        container_layout = QHBoxLayout(button_container)
+        # Main vertical layout to stack playlist panel above buttons
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 60)
+        self.main_layout.setSpacing(20)
+        self.main_layout.setAlignment(Qt.AlignBottom | Qt.AlignHCenter)
+        
+        # Placeholder for playlist panel (will be set from main.py)
+        self.playlist_panel = None
+        
+        # Spacer to push everything to the bottom
+        self.main_layout.addStretch(1)
+        
+        self.button_container = QWidget()
+        self.button_container.setStyleSheet("background-color: rgba(0,0,0,0.3); border-radius: 35px;")
+        self.button_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        container_layout = QHBoxLayout(self.button_container)
         container_layout.setContentsMargins(20, 10, 20, 10)
         container_layout.setSpacing(20)
         
@@ -54,8 +64,59 @@ class OverlayWidget(QWidget):
         container_layout.addWidget(self.wallpaper_button)
         container_layout.addWidget(self.notif_mode_button)
         
-        self.layout.addWidget(button_container)
-        self.setLayout(self.layout)
+        self.main_layout.addWidget(self.button_container, 0, Qt.AlignHCenter)
+        self.setLayout(self.main_layout)
+    
+    def sizeHint(self):
+        """Calculate proper size based on content."""
+        # Get button container size
+        button_hint = self.button_container.sizeHint()
+        button_height = button_hint.height()
+        button_width = button_hint.width()
+        
+        # Get playlist panel size
+        playlist_width = self.playlist_panel.width() if self.playlist_panel else 400
+        playlist_height = 0
+        if self.playlist_panel and self.playlist_panel.isVisible():
+            playlist_height = self.playlist_panel.height() + 20  # Add spacing
+        else:
+            playlist_height = 80  # Minimum when empty
+        
+        # Calculate total size
+        total_height = playlist_height + button_height + 80  # 80 for margins and spacing
+        total_width = max(button_width, playlist_width) + 40  # 40 for margins
+        
+        return self.size().__class__(total_width, total_height)
+    
+    def update_size(self):
+        """Update overlay size when playlist panel changes."""
+        # Calculate proper dimensions based on content
+        button_height = self.button_container.sizeHint().height()
+        playlist_height = 0
+        if self.playlist_panel:
+            playlist_height = self.playlist_panel.height() + 20
+        else:
+            playlist_height = 80
+        
+        button_width = self.button_container.sizeHint().width()
+        playlist_width = self.playlist_panel.width() if self.playlist_panel else 400
+        
+        total_width = max(button_width, playlist_width) + 40
+        total_height = playlist_height + button_height + 80
+        
+        self.resize(total_width, total_height)
+    
+    def set_playlist_panel(self, panel):
+        """Attach the playlist panel to the overlay."""
+        if self.playlist_panel:
+            self.main_layout.removeWidget(self.playlist_panel)
+        self.playlist_panel = panel
+        if panel:
+            # Insert playlist panel after the stretch (index 1), before the button container
+            # Layout is: [0: stretch, 1: <insert here>, 2: button_container]
+            self.main_layout.insertWidget(1, panel, alignment=Qt.AlignHCenter)
+            # Update size when panel is set
+            self.update_size()
 
     def fade_in(self):
         try: self.opacity_animation.finished.disconnect(self.hide)
@@ -63,17 +124,37 @@ class OverlayWidget(QWidget):
         self.opacity_effect.setOpacity(0)
         self.show()
         self.raise_()
+        # Show playlist panel if attached
+        if self.playlist_panel:
+            self.playlist_panel.show()
+            self.playlist_panel.raise_()
         self.opacity_animation.setStartValue(0.0)
         self.opacity_animation.setEndValue(1.0)
         self.opacity_animation.start()
+        if self.parent():
+            self.parent().activateWindow()
+            self.parent().setFocus(Qt.ActiveWindowFocusReason)
 
     def fade_out(self):
         try: self.opacity_animation.finished.disconnect(self.hide)
         except TypeError: pass
+        # Store current size to prevent layout from shrinking
+        current_size = self.size()
+        # Restore size after fading to prevent shrinking
+        self.resize(current_size)
+        # Disconnect any previous connections to avoid multiple hide calls
+        try:
+            self.opacity_animation.finished.disconnect()
+        except TypeError:
+            pass
+        # Connect to hide the entire overlay (including playlist panel) after fade completes
         self.opacity_animation.finished.connect(self.hide)
         self.opacity_animation.setStartValue(1.0)
         self.opacity_animation.setEndValue(0.0)
         self.opacity_animation.start()
+        if self.parent():
+            self.parent().activateWindow()
+            self.parent().setFocus(Qt.ActiveWindowFocusReason)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -81,8 +162,14 @@ class OverlayWidget(QWidget):
                 self.fade_out()
                 event.accept()
             else:
+                if self.parent():
+                    self.parent().activateWindow()
+                    self.parent().setFocus(Qt.ActiveWindowFocusReason)
                 super().mousePressEvent(event)
         else:
+            if self.parent():
+                self.parent().activateWindow()
+                self.parent().setFocus(Qt.ActiveWindowFocusReason)
             super().mousePressEvent(event)
 
 class NotificationContent(QWidget):

@@ -6,6 +6,7 @@ import io
 import multiprocessing
 from services import ColorCache, GoveeController, SoundManager, GlobalSoundFilter
 from PIL import Image
+from requests import get
 
 # --- FIXED IMPORTS ---
 # QRectF, QPropertyAnimation, and QVariantAnimation moved to QtCore
@@ -29,6 +30,7 @@ from utils import resource_path
 from services import ColorCache, GoveeController
 from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, IS_WINDOWS
 from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel
+from ui.playlist_panel import PlaylistPanel
 from utils import get_best_text_color, get_best_border_color
 from ui.overlays import OverlayWidget, NotificationWidget
 from ui.dialogs import ColorEditorDialog, SpotifySetupDialog, ThemedMessageBox
@@ -40,6 +42,9 @@ class SpotifyPlayer(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._user_playlists = []  # Preloaded user playlists
+        self._user_albums = []  # Preloaded user albums
+        self.playlists = []  # Currently displayed playlists/albums (saved + user)
         # --- NEW: Global Sound Engine Setup ---
         self.sound_manager = SoundManager(self)
         self.sound_filter = GlobalSoundFilter(self.sound_manager)
@@ -166,6 +171,7 @@ class SpotifyPlayer(QMainWindow):
             self._check_for_first_run()
 
         self._setup_ui()
+        self._load_saved_playlists()  # Load saved playlists before preloading new ones
         self._setup_animations()
         self._setup_tray_icon()
         self._setup_timers()
@@ -180,6 +186,18 @@ class SpotifyPlayer(QMainWindow):
         self.overlay.multi_monitor_button.clicked.connect(self.toggle_multi_monitor_fullscreen)
         self.overlay.wallpaper_button.clicked.connect(self.toggle_wallpaper_mode)
         self.overlay.notif_mode_button.clicked.connect(self.toggle_notification_only_mode)
+
+        # --- Playlist/Album Panel (Centered in overlay, triggered by right-click) ---
+        self.playlist_panel = PlaylistPanel(self.overlay, main_window=self)
+        self.playlist_panel.setVisible(False)
+        self.playlist_panel.playlist_selected.connect(self._on_playlist_selected)
+        self.playlist_panel.shuffle_requested.connect(self._on_shuffle_playlist)
+        # Attach playlist panel to overlay
+        self.overlay.set_playlist_panel(self.playlist_panel)
+        # Apply saved playlists/albums after panel is created
+        if getattr(self, "playlists", None):
+            print(f"Applying {len(self.playlists)} saved playlists/albums to panel after creation")
+            self.playlist_panel.set_playlists(self.playlists, skip_save=True)
 
         # Show an initial idle screen.
         QTimer.singleShot(100, self._show_idle_screen)
@@ -263,6 +281,7 @@ class SpotifyPlayer(QMainWindow):
     def _setup_spotify(self):
         settings = QSettings("SpotifySync", "App")
         did_show_setup_dialog = False
+        self.sp = None  # Initialize to None; will be set if credentials provided
         
         while True:
             client_id = settings.value("spotify_client_id")
@@ -271,8 +290,14 @@ class SpotifyPlayer(QMainWindow):
             if not client_id or not client_secret:
                 did_show_setup_dialog = True
                 dialog = SpotifySetupDialog()
-                if dialog.exec_() != QDialog.Accepted:
-                    sys.exit(0) # User cancelled, exit app
+                result = dialog.exec_()
+                if result == SpotifySetupDialog.SKIP_CODE:
+                    # User chose to skip Spotify setup
+                    self.sp = None
+                    break
+                elif result != QDialog.Accepted:
+                    # User cancelled, exit app
+                    sys.exit(0)
                 continue # Loop again to load the new settings
 
             try:
@@ -294,15 +319,17 @@ class SpotifyPlayer(QMainWindow):
                 msg = ThemedMessageBox("Authentication Error",
                     f"Spotify Authentication Failed.\n\nError: {e}\n\n"
                     "Do you want to reset your saved Client ID and Secret?\n"
-                    "(Yes to reset, No to retry, Cancel to exit)",
-                    [("Yes", QDialog.Accepted), ("No", QDialog.Rejected), ("Cancel", 2)], self, self._current_bg_color, self._current_text_color, QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size)
+                    "(Yes to reset, No to retry, Cancel to skip Spotify)",
+                    [("Yes", QDialog.Accepted), ("No", QDialog.Rejected), ("Skip", 2)], self, self._current_bg_color, self._current_text_color, QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size)
 
                 res = msg.exec_()
                 if res == QDialog.Accepted:
                     settings.remove("spotify_client_id")
                     settings.remove("spotify_client_secret")
                 elif res == 2:
-                    sys.exit(0)
+                    # User chose to skip Spotify
+                    self.sp = None
+                    break
         return did_show_setup_dialog
 
     def _load_settings(self):
@@ -433,61 +460,378 @@ class SpotifyPlayer(QMainWindow):
         self.container.setStyleSheet("background-color: transparent;")
         self.setCentralWidget(self.container)
         
+        # Enable mouse tracking for hover detection
+        self.setMouseTracking(True)
+        self.container.setMouseTracking(True)
+        
         self.main_layout = QBoxLayout(QBoxLayout.TopToBottom)
         self.main_layout.setSpacing(20)
         self.container.setLayout(self.main_layout)
 
+        # Art and details widgets
         self.art_container = QWidget()
         self.art_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         art_container_layout = QVBoxLayout(self.art_container)
         art_container_layout.setContentsMargins(0,0,0,0)
-        
         self.title_shadow = QGraphicsDropShadowEffect(self)
         self.artist_shadow = QGraphicsDropShadowEffect(self)
-
         self.art = ResponsiveAlbumArtLabel(radius=15)
 
+        # --- Details layout must be created before use ---
         self.details_widget = QWidget()
-        details_layout = QVBoxLayout(self.details_widget)
-        details_layout.setSpacing(15)
-        details_layout.setContentsMargins(20, 0, 20, 0)
-        
+        self.details_layout = QVBoxLayout(self.details_widget)
+        self.details_layout.setSpacing(15)
+        self.details_layout.setContentsMargins(20, 0, 20, 0)
+
         font_family = "Trebuchet MS" if "Trebuchet MS" in QFontDatabase().families() else "Sans Serif"
         self.title = ScrollingTextLabel("–")
         self.title.setFont(QFont(font_family, 23, QFont.Bold))
         self.title.setGraphicsEffect(self.title_shadow) 
-        self.title.setStyleSheet("background: transparent;") # Ensure background is transparent
+        self.title.setStyleSheet("background: transparent;")
 
-        self.album_name = ScrollingTextLabel("–") # New album name label
-        self.album_name.setFont(QFont(font_family, 16)) # Smaller than title, slightly smaller than artist
-        self.album_name.setGraphicsEffect(QGraphicsDropShadowEffect(self)) # Add shadow effect
-        self.album_name.setStyleSheet("background: transparent;") # Ensure background is transparent
-        
+        self.album_name = ScrollingTextLabel("–")
+        self.album_name.setFont(QFont(font_family, 16))
+        self.album_name.setGraphicsEffect(QGraphicsDropShadowEffect(self))
+        self.album_name.setStyleSheet("background: transparent;")
+
         self.artist = ScrollingTextLabel("–")
         self.artist.setFont(QFont(font_family, 18))
         self.artist.setGraphicsEffect(self.artist_shadow) 
-        self.artist.setStyleSheet("background: transparent;") # Ensure background is transparent
+        self.artist.setStyleSheet("background: transparent;")
 
         self.progress_bar = SmoothProgressBar()
 
-        details_layout.addWidget(self.title)
-        details_layout.addWidget(self.artist)
+        self.details_layout.addWidget(self.title)
+        self.details_layout.insertWidget(1, self.album_name)
+        self.details_layout.addWidget(self.artist)
+        self.details_layout.addWidget(self.progress_bar)
 
         art_container_layout.addWidget(self.art)
 
         self.main_layout.addStretch(1)
-        details_layout.insertWidget(1, self.album_name) # Insert album name between title and artist
-        details_layout.addWidget(self.progress_bar)
         self.main_layout.addWidget(self.art_container, 5)
         self.main_layout.addWidget(self.details_widget, 2, Qt.AlignCenter)
         self.main_layout.addStretch(1)
 
         self.title.setAlignment(Qt.AlignCenter)
         self.artist.setAlignment(Qt.AlignCenter)
-        details_layout.setAlignment(Qt.AlignCenter)
+        self.details_layout.setAlignment(Qt.AlignCenter)
         
         self.update_art_shadow_properties()
         self.setTextAlpha(self._text_alpha)
+
+    def _load_saved_playlists(self):
+        """Load saved playlists and albums from QSettings and display them."""
+        settings = QSettings("SpotifySync", "App")
+        saved = settings.value("user_playlists", "[]")
+        try:
+            if isinstance(saved, str):
+                items = json.loads(saved)
+            else:
+                items = saved if isinstance(saved, list) else []
+            
+            # Always initialize self.playlists
+            self.playlists = items if items else []
+            
+            if items:
+                print(f"Loaded {len(items)} playlists/albums from settings")
+                # Ensure cover art and item_type for each item
+                for item in items:
+                    if item.get('id'):
+                        item_type = item.get('item_type', 'playlist')
+                        if not item.get('uri'):
+                            item['uri'] = f"spotify:{item_type}:{item.get('id')}"
+                    if not item.get('cover_art_b64'):
+                        item['cover_art_b64'] = self._fetch_and_encode_cover_art(item)
+                # Store items for later application after panel is created
+                self.playlists = items
+                if hasattr(self, 'playlist_panel'):
+                    self.playlist_panel.set_playlists(items, skip_save=True)
+        except Exception as e:
+            print(f"Error loading saved playlists: {e}")
+            self.playlists = []
+
+    def _get_user_playlists(self):
+        """Fetch the user's own Spotify playlists (public and private) on-demand, with caching."""
+        # Return cached playlists if already fetched
+        if self._user_playlists:
+            return self._user_playlists
+        
+        try:
+            sp = self._get_spotify_client()
+            playlists = []
+            limit = 50
+            offset = 0
+            while True:
+                resp = sp.current_user_playlists(limit=limit, offset=offset)
+                for pl in resp.get('items', []):
+                    # Include images if available, but don't encode cover art
+                    playlist_data = {
+                        'name': pl['name'],
+                        'id': pl['id'],
+                        'uri': pl.get('uri') or f"spotify:playlist:{pl['id']}",
+                        'images': pl.get('images', []),
+                        'item_type': 'playlist'
+                    }
+                    playlists.append(playlist_data)
+                if resp.get('next'):
+                    offset += limit
+                else:
+                    break
+            self._user_playlists = playlists
+            print(f"Fetched {len(playlists)} user playlists from Spotify")
+            return playlists
+        except Exception as e:
+            print(f"Error fetching user playlists: {e}")
+            return []
+
+    def _get_user_albums(self):
+        """Fetch the user's saved albums from Spotify on-demand, with caching."""
+        # Return cached albums if already fetched
+        if self._user_albums:
+            return self._user_albums
+        
+        try:
+            sp = self._get_spotify_client()
+            albums = []
+            limit = 50
+            offset = 0
+            while True:
+                resp = sp.current_user_saved_albums(limit=limit, offset=offset)
+                for item in resp.get('items', []):
+                    album = item.get('album', {})
+                    # Include images if available, but don't encode cover art
+                    album_data = {
+                        'name': album['name'],
+                        'id': album['id'],
+                        'uri': album.get('uri') or f"spotify:album:{album['id']}",
+                        'images': album.get('images', []),
+                        'item_type': 'album'
+                    }
+                    albums.append(album_data)
+                if resp.get('next'):
+                    offset += limit
+                else:
+                    break
+            self._user_albums = albums
+            print(f"Fetched {len(albums)} user albums from Spotify")
+            return albums
+        except Exception as e:
+            print(f"Error fetching user albums: {e}")
+            return []
+
+    def _get_spotify_client(self):
+        # Helper to get a valid spotipy.Spotify client (with token refresh if needed)
+        if hasattr(self, 'sp') and self.sp:
+            return self.sp
+        # Fallback: try to create a new client
+        return Spotify(auth_manager=SpotifyOAuth(
+            client_id=os.environ.get('SPOTIPY_CLIENT_ID'),
+            client_secret=os.environ.get('SPOTIPY_CLIENT_SECRET'),
+            redirect_uri=SPOTIPY_REDIRECT_URI,
+            scope=SPOTIFY_SCOPE
+        ))
+
+    def _resolve_playlist_context(self, playlist_ref):
+        """Resolve context URI for both playlists and albums."""
+        if not playlist_ref:
+            return None, None
+        if isinstance(playlist_ref, dict):
+            playlist_ref = playlist_ref.get('uri') or playlist_ref.get('id')
+        if not playlist_ref:
+            return None, None
+        # Check if it's already a Spotify URI
+        if playlist_ref.startswith('spotify:playlist:'):
+            return playlist_ref, playlist_ref.split(':')[-1]
+        if playlist_ref.startswith('spotify:album:'):
+            return playlist_ref, playlist_ref.split(':')[-1]
+        # Check for web links
+        if 'open.spotify.com/playlist/' in playlist_ref or 'spotify.com/playlist/' in playlist_ref:
+            import re
+            match = re.search(r'playlist[/:]([a-zA-Z0-9]+)', playlist_ref)
+            if match:
+                playlist_id = match.group(1)
+                return f"spotify:playlist:{playlist_id}", playlist_id
+        if 'open.spotify.com/album/' in playlist_ref or 'spotify.com/album/' in playlist_ref:
+            import re
+            match = re.search(r'album[/:]([a-zA-Z0-9]+)', playlist_ref)
+            if match:
+                album_id = match.group(1)
+                return f"spotify:album:{album_id}", album_id
+        # Default to playlist
+        return f"spotify:playlist:{playlist_ref}", playlist_ref
+
+    def _get_active_device_id(self, sp):
+        try:
+            devices = sp.devices().get('devices', [])
+        except Exception as e:
+            print(f"Error fetching Spotify devices: {e}")
+            return None
+        if not devices:
+            print("No active Spotify devices found. Please open Spotify on a device first.")
+            return None
+        active_device = next((d for d in devices if d.get('is_active')), None)
+        return (active_device or devices[0]).get('id')
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+    def _on_add_playlist_requested(self):
+        # No longer used, handled in PlaylistPanel
+        pass
+
+    def _on_playlist_selected(self, playlist_ref):
+        # Play the selected playlist or album
+        print(f"Playing playlist/album with ID: {playlist_ref}")
+        if not self.sp:
+            print("Error: Spotify API not configured. Cannot play playlists/albums.")
+            ThemedMessageBox("Spotify Not Configured",
+                "Spotify API is not configured.\n\nTo play playlists/albums, please set up Spotify credentials in Settings.",
+                [("OK", QDialog.Accepted)], self, self._current_bg_color, self._current_text_color, 
+                QColor(100, 100, 100), self._current_text_border_enabled, 
+                QColor(*self._current_text_border_color), self._current_text_border_size).exec_()
+            return
+        try:
+            sp = self._get_spotify_client()
+            context_uri, playlist_id = self._resolve_playlist_context(playlist_ref)
+            if not context_uri:
+                print("Error: Could not resolve playlist URI for playback")
+                return
+            device_id = self._get_active_device_id(sp)
+            if device_id:
+                sp.start_playback(device_id=device_id, context_uri=context_uri)
+            else:
+                sp.start_playback(context_uri=context_uri)
+            print(f"Successfully started playback for playlist: {playlist_id or playlist_ref}")
+        except Exception as e:
+            print(f"Error playing playlist: {e}")
+            # Check if it's a device issue
+            try:
+                devices = sp.devices()
+                if not devices.get('devices'):
+                    print("No active Spotify devices found. Please open Spotify on a device first.")
+                else:
+                    print(f"Available devices: {[d['name'] for d in devices.get('devices', [])]}")
+            except:
+                pass
+
+    def _on_shuffle_playlist(self, playlist_ref):
+        # Play the selected playlist or album with shuffle enabled
+        print(f"Shuffling and playing playlist/album with ID: {playlist_ref}")
+        if not self.sp:
+            print("Error: Spotify API not configured. Cannot play playlists/albums.")
+            ThemedMessageBox("Spotify Not Configured",
+                "Spotify API is not configured.\n\nTo play playlists/albums, please set up Spotify credentials in Settings.",
+                [("OK", QDialog.Accepted)], self, self._current_bg_color, self._current_text_color, 
+                QColor(100, 100, 100), self._current_text_border_enabled, 
+                QColor(*self._current_text_border_color), self._current_text_border_size).exec_()
+            return
+        try:
+            sp = self._get_spotify_client()
+            context_uri, playlist_id = self._resolve_playlist_context(playlist_ref)
+            if not context_uri:
+                print("Error: Could not resolve playlist URI for shuffle playback")
+                return
+            device_id = self._get_active_device_id(sp)
+            if device_id:
+                sp.start_playback(device_id=device_id, context_uri=context_uri)
+                sp.shuffle(True, device_id=device_id)
+            else:
+                sp.start_playback(context_uri=context_uri)
+                sp.shuffle(True)
+            print(f"Successfully started shuffled playback for playlist: {playlist_id or playlist_ref}")
+        except Exception as e:
+            print(f"Error shuffling playlist: {e}")
+            # Check if it's a device issue
+            try:
+                devices = sp.devices()
+                if not devices.get('devices'):
+                    print("No active Spotify devices found. Please open Spotify on a device first.")
+                else:
+                    print(f"Available devices: {[d['name'] for d in devices.get('devices', [])]}")
+            except:
+                pass
+
+    def on_playlists_updated(self, items):
+        """Save playlists and albums, and update UI when list changes."""
+        # Enforce cover art and item_type for every item before saving
+        for item in items:
+            if 'item_type' not in item:
+                item['item_type'] = 'playlist'
+            if 'cover_art_b64' not in item or not item['cover_art_b64']:
+                item['cover_art_b64'] = self._fetch_and_encode_cover_art(item)
+        self.playlists = items
+        settings = QSettings("SpotifySync", "App")
+        settings.setValue("user_playlists", json.dumps(self.playlists))
+        print(f"Saved {len(items)} playlists/albums to settings")
+        # Update UI without causing infinite loop
+        self.playlist_panel.set_playlists(self.playlists, skip_save=True)
+        # Reposition overlay if it's currently visible (in case size changed)
+        self._reposition_overlay_if_visible()
+
+    def _fetch_and_encode_cover_art(self, item):
+        import base64
+        import requests
+        url = None
+        item_name = item.get('name', 'Unknown')
+        item_type = item.get('item_type', 'playlist')
+        item_id = item.get('id')
+        
+        # Return cached if already present
+        if 'cover_art_b64' in item and item['cover_art_b64']:
+            return item['cover_art_b64']
+        
+        # Return empty if already marked as unavailable (404 error)
+        if item.get('_unavailable'):
+            return None
+        
+        # Prefer any images already present in the item dict
+        if 'images' in item and item['images']:
+            url = item['images'][0].get('url')
+        elif 'cover_url' in item:
+            url = item['cover_url']
+
+        # If no URL available, try to fetch details from Spotify API
+        if not url and item_id:
+            try:
+                sp = self._get_spotify_client()
+                if item_type == 'album':
+                    details = sp.album(item_id)
+                else:
+                    details = sp.playlist(item_id)
+                
+                images = details.get('images', [])
+                if images:
+                    url = images[0].get('url')
+                    # Cache the images array for future use
+                    item['images'] = images
+                    print(f"Fetched image URL from Spotify for: {item_name}")
+            except Exception as e:
+                error_str = str(e)
+                # Silently skip 404 errors (deleted/unavailable items)
+                if '404' not in error_str and 'not found' not in error_str.lower():
+                    print(f"Error fetching {item_type} details from Spotify for {item_name}: {e}")
+                # Mark as unavailable to avoid retrying repeatedly
+                item['_unavailable'] = True
+                return None
+
+        if url:
+            try:
+                print(f"Downloading cover art from: {url[:50]}...")
+                resp = requests.get(url, timeout=5)
+                if resp.status_code == 200:
+                    b64 = base64.b64encode(resp.content).decode('utf-8')
+                    # Cache on item object for persistence
+                    item['cover_art_b64'] = b64
+                    item['cover_url'] = url
+                    print(f"Successfully encoded cover art for: {item_name}")
+                    return b64
+                else:
+                    print(f"Failed to download cover art (status {resp.status_code}) for: {item_name}")
+            except Exception as e:
+                print(f"Error downloading cover art for {item_name}: {e}")
+        
+        return None
 
     def _setup_animations(self):
         EASING_OUT = QEasingCurve.OutCubic
@@ -1474,9 +1818,18 @@ class SpotifyPlayer(QMainWindow):
 
         if hasattr(self, 'overlay'):
             self.overlay.resize(self.container.size())
+            # Reposition overlay if it's visible
+            self._reposition_overlay_if_visible()
 
         self._bg_crossfade_lerp = 1.0 
         self.update()
+    
+    def moveEvent(self, event):
+        """Handle window move events to reposition overlay on different monitors."""
+        super().moveEvent(event)
+        # Reposition overlay if it's visible when window moves
+        if hasattr(self, 'overlay'):
+            self._reposition_overlay_if_visible()
 
     def update_layout(self):
         width = self.width()
@@ -1773,6 +2126,7 @@ class SpotifyPlayer(QMainWindow):
             print("Error: Could not create QPixmap from PIL image data")
         
     def toggle_multi_monitor_fullscreen(self):
+        self._remember_overlay_visibility()
         screens = QApplication.screens()
         if not screens:
             return  # Handle case with no screens
@@ -1800,12 +2154,15 @@ class SpotifyPlayer(QMainWindow):
             self.setGeometry(total_rect)
             self.show()
             self.is_fullscreen = True
+        QTimer.singleShot(0, self._restore_overlay_visibility)
             
     def shift_multi_monitor_content(self, direction):
         # Allow shifting if in multi-monitor OR in wallpaper that came from multi-monitor
-        is_in_valid_state = self.multi_monitor_mode or (self.is_wallpaper_mode and self._was_multi_monitor)
+        is_in_valid_state = self.multi_monitor_mode or (self.is_wallpaper_mode and hasattr(self, '_was_multi_monitor') and self._was_multi_monitor)
         if not is_in_valid_state:
             return
+
+        self._remember_overlay_visibility()
 
         screens = QApplication.screens()
         screens.sort(key=lambda s: (s.geometry().x(), s.geometry().y()))
@@ -1836,11 +2193,14 @@ class SpotifyPlayer(QMainWindow):
                 self.target_monitor_geo = new_geo
             
             self.update_layout()
+            QTimer.singleShot(0, self._restore_overlay_visibility)
 
     def shift_single_monitor_fullscreen(self, direction):
         screens = QApplication.screens()
         if len(screens) < 2: return
         screens.sort(key=lambda s: (s.geometry().x(), s.geometry().y()))
+
+        self._remember_overlay_visibility()
         
         current_screen = QApplication.screenAt(self.geometry().center())
         if not current_screen: current_screen = screens[0]
@@ -1866,10 +2226,12 @@ class SpotifyPlayer(QMainWindow):
         QTimer.singleShot(100, lambda: (
             self.update_layout(),
             self._update_text_properties(),
-            self.title and self.artist and self._trigger_notification(self.title.text(), self.artist.text(), self._current_pil_img, self._cur_text_color)
+            self.title and self.artist and self._trigger_notification(self.title.text(), self.artist.text(), self._current_pil_img, self._cur_text_color),
+            self._restore_overlay_visibility()
         ))
 
     def toggle_wallpaper_mode(self):
+        self._remember_overlay_visibility()
         if self.is_wallpaper_mode:
             self.is_wallpaper_mode = False
             if self.tray_icon: self.tray_icon.hide()
@@ -1914,9 +2276,12 @@ class SpotifyPlayer(QMainWindow):
             self.setGeometry(target_geo)
             self.show()
             if self.tray_icon: self.tray_icon.show()
+        QTimer.singleShot(0, self._restore_overlay_visibility)
 
     def _position_overlay_at_monitor_bottom(self):
-        """Position the overlay centered at the bottom of the current monitor."""
+        """Position the overlay centered at the bottom of the current monitor.
+        Handles sizing to fit within monitor bounds.
+        """
         # Determine which monitor the player is on
         monitor_geo = None
         if self.multi_monitor_mode and self.target_monitor_geo:
@@ -1932,34 +2297,71 @@ class SpotifyPlayer(QMainWindow):
                     monitor_geo = screens[0].geometry()
         
         if monitor_geo:
-            # Center horizontally and position at bottom with some margin
             overlay_width = self.overlay.width()
             overlay_height = self.overlay.height()
-            x = monitor_geo.left() + (monitor_geo.width() - overlay_width) // 2
-            y = monitor_geo.bottom() - overlay_height - 60  # 60 pixel margin from bottom
+            window_geo = self.geometry()
+            
+            # Check if overlay fits in monitor
+            available_height = monitor_geo.height() - 100  # 100px margin
+            available_width = monitor_geo.width()
+            
+            # Constrain if too large
+            if overlay_height > available_height:
+                constrained_height = max(available_height, 150)
+                self.overlay.resize(overlay_width, constrained_height)
+                overlay_height = constrained_height
+            
+            if overlay_width > available_width:
+                constrained_width = available_width - 40
+                self.overlay.resize(constrained_width, overlay_height)
+                overlay_width = constrained_width
+            
+            # Center within the monitor using window-local coordinates
+            local_left = monitor_geo.left() - window_geo.left()
+            local_top = monitor_geo.top() - window_geo.top()
+            x = local_left + (monitor_geo.width() - overlay_width) // 2
+            y = local_top + monitor_geo.height() - overlay_height - 60  # 60px margin
             self.overlay.move(x, y)
 
     def _position_overlay_at_window_bottom(self):
         """Position the overlay centered at the bottom of the player window.
-        This keeps the overlay inside the window bounds and updates while resizing.
-        Coordinates used are global screen coordinates so move() places the overlay correctly.
+        Handles all window orientations (portrait/landscape) and ensures content fits.
         """
         if not self.overlay:
             return
 
+        win_geo = self.geometry()
         overlay_width = self.overlay.width()
         overlay_height = self.overlay.height()
-
-        win_geo = self.geometry()
+        
+        # Calculate available space
+        available_height = win_geo.height() - 100  # 100px margin from top/bottom
+        available_width = win_geo.width()
+        
+        # If overlay is too tall, we need to constrain it
+        if overlay_height > available_height:
+            # Reduce overlay height to fit with some margin
+            constrained_height = max(available_height, 150)  # Minimum 150px
+            self.overlay.resize(overlay_width, constrained_height)
+            overlay_height = constrained_height
+        
+        # If overlay is wider than window, constrain width
+        if overlay_width > available_width:
+            constrained_width = available_width - 40  # 20px margin on each side
+            self.overlay.resize(constrained_width, overlay_height)
+            overlay_width = constrained_width
+        
         # Center horizontally within window
         x = win_geo.left() + (win_geo.width() - overlay_width) // 2
-        # Position slightly above the bottom edge so it stays inside the window
+        
+        # Position near bottom with margin, but ensure it fits
         margin = 16
         y = win_geo.bottom() - overlay_height - margin
+        
         # Ensure overlay does not go above the top of the window
-        if y < win_geo.top():
-            y = win_geo.top()
-
+        if y < win_geo.top() + 50:
+            y = win_geo.top() + 50
+        
         self.overlay.move(x, y)
 
     def _get_corner_at_position(self, pos):
@@ -1996,10 +2398,10 @@ class SpotifyPlayer(QMainWindow):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
-            # The dialog is modal, so this event shouldn't fire when it's open,
-            # but this is a good safeguard.
+            # Toggle overlay visibility with right-click
             if self.overlay.isHidden():
-                self.overlay.resize(self.container.size())
+                # Show overlay
+                self.overlay.update_size()
                 # Position overlay at bottom-center of window in windowed mode,
                 # otherwise position it at the monitor bottom
                 if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
@@ -2007,6 +2409,10 @@ class SpotifyPlayer(QMainWindow):
                 else:
                     self._position_overlay_at_monitor_bottom()
                 self.overlay.fade_in()
+                event.accept()
+            else:
+                # Hide overlay
+                self.overlay.fade_out()
                 event.accept()
         elif event.button() == Qt.LeftButton:
             if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
@@ -2026,6 +2432,33 @@ class SpotifyPlayer(QMainWindow):
         else:
             # Pass other clicks to the parent
             super().mousePressEvent(event)
+    
+    def _reposition_overlay_if_visible(self, force_show=False):
+        """Reposition the overlay if it's visible; optionally force-show it."""
+        if not self.overlay:
+            return
+        if self.overlay.isHidden():
+            if not force_show:
+                return
+            self.overlay.show()
+            self.overlay.raise_()
+            if self.overlay.playlist_panel:
+                self.overlay.playlist_panel.show()
+
+        self.overlay.update_size()
+        if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
+            self._position_overlay_at_window_bottom()
+        else:
+            self._position_overlay_at_monitor_bottom()
+
+    def _remember_overlay_visibility(self):
+        """Remember whether the overlay was visible before a mode change."""
+        self._overlay_was_visible = bool(self.overlay and not self.overlay.isHidden())
+
+    def _restore_overlay_visibility(self):
+        """Restore overlay visibility after a mode change if it was visible."""
+        if getattr(self, "_overlay_was_visible", False):
+            self._reposition_overlay_if_visible(force_show=True)
 
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.LeftButton:
@@ -2113,6 +2546,7 @@ class SpotifyPlayer(QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape: self.close()
         elif event.key() == Qt.Key_F:
+            self._remember_overlay_visibility()
             if self.is_wallpaper_mode:
                 return
             if self.multi_monitor_mode:
@@ -2122,6 +2556,7 @@ class SpotifyPlayer(QMainWindow):
                 if self.target_monitor_geo: self.setGeometry(self.target_monitor_geo)
                 self.show()
                 self.update_layout()
+                QTimer.singleShot(0, self._restore_overlay_visibility)
             elif self.is_fullscreen:
                 self.is_fullscreen = False
                 # Windowed mode: use frameless to remove decorations, but keep our custom drag/resize
@@ -2140,6 +2575,7 @@ class SpotifyPlayer(QMainWindow):
                     self.setGeometry(new_x, new_y, new_width, new_height)
                 self.show()
                 self.update_layout()
+                QTimer.singleShot(0, self._restore_overlay_visibility)
             else:
                 self.is_fullscreen = True
                 # Get the screen and set geometry to fill it completely
@@ -2153,6 +2589,7 @@ class SpotifyPlayer(QMainWindow):
                     self.setGeometry(screen.geometry())
                 self.showFullScreen()
                 self.update_layout()
+                QTimer.singleShot(0, self._restore_overlay_visibility)
         elif event.key() == Qt.Key_F11:
             if self.is_wallpaper_mode:
                 return

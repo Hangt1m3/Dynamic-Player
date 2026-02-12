@@ -26,6 +26,7 @@ import os
 winsdk_hidden_imports = collect_submodules('winsdk')
 sklearn_hidden_imports = collect_submodules('sklearn')
 spotipy_hidden_imports = collect_submodules('spotipy')
+scipy_hidden_imports = collect_submodules('scipy')
 
 # Explicit hidden imports for all dependencies
 other_hidden_imports = [
@@ -45,6 +46,8 @@ other_hidden_imports = [
     'numpy',
     'numpy.core',
     'numpy.core._multiarray_umath',
+    'scipy',
+    'scipy.sparse',
     
     # Scikit-learn
     'sklearn',
@@ -89,7 +92,7 @@ a = Analysis(
         ('icon.ico', '.'),
         ('sounds', 'sounds'),
     ] + sklearn_datas + certifi_datas,
-    hiddenimports=winsdk_hidden_imports + sklearn_hidden_imports + spotipy_hidden_imports + other_hidden_imports,
+    hiddenimports=winsdk_hidden_imports + sklearn_hidden_imports + spotipy_hidden_imports + scipy_hidden_imports + other_hidden_imports,
 
 
     hookspath=[],
@@ -98,7 +101,6 @@ a = Analysis(
     excludes=[
         # Exclude unnecessary packages to reduce size
         'matplotlib',
-        'scipy',
         'pandas',
         'tkinter',
     ],

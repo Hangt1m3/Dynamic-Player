@@ -1,5 +1,5 @@
-from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QScrollArea, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF, QParallelAnimationGroup, QAbstractAnimation
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication
 from PyQt5.QtGui import QColor, QPixmap, QCursor, QPainter, QBrush, QPainterPath, QBitmap
 import requests
 
@@ -373,6 +373,73 @@ class PlaylistItemWidget(QFrame):
                     print(f"Deleted {item_type}: {self.playlist.get('name')}")
 
 
+class AddPlaylistSquareWidget(QFrame):
+    """A clickable square widget for adding new playlists/albums. Appears in the grid like other playlist items."""
+    SQUARE_SIZE = 196  # Match PlaylistItemWidget
+    
+    def __init__(self, panel=None, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.setFixedHeight(self.SQUARE_SIZE + 24)
+        self.setFixedWidth(self.SQUARE_SIZE + 24)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.setMouseTracking(True)
+        self.hovered = False
+        self._scale = 1.0
+        
+        # Main square background with "+" icon
+        self.square = QFrame(self)
+        self.square.setFixedSize(self.SQUARE_SIZE, self.SQUARE_SIZE)
+        self.square.move(12, 12)
+        self.square.setStyleSheet(
+            "QFrame { background: rgba(60, 60, 60, 200); border-radius: 20px; border: 2px solid rgba(100, 100, 100, 150); }"
+        )
+        
+        # Add "+" text in the center
+        self.icon_label = QLabel("+", self.square)
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setGeometry(0, 0, self.SQUARE_SIZE, self.SQUARE_SIZE)
+        self.icon_label.setStyleSheet("QLabel { color: rgba(150, 150, 150, 200); font-size: 72px; font-weight: bold; }")
+        
+        # Add text below the square
+        self.text_label = QLabel("Add Playlist\nor Album", self)
+        self.text_label.setAlignment(Qt.AlignHCenter)
+        self.text_label.setGeometry(0, self.SQUARE_SIZE + 30, self.SQUARE_SIZE + 24, 40)
+        self.text_label.setStyleSheet("QLabel { color: rgba(150, 150, 150, 150); font-size: 11px; }")
+        self.text_label.setWordWrap(True)
+        
+        self.setCursor(Qt.PointingHandCursor)
+    
+    def enterEvent(self, event):
+        """Highlight on hover."""
+        self.hovered = True
+        self.square.setStyleSheet(
+            "QFrame { background: rgba(80, 80, 80, 220); border-radius: 20px; border: 2px solid rgba(150, 150, 150, 200); }"
+        )
+        self.icon_label.setStyleSheet("QLabel { color: rgba(200, 200, 200, 255); font-size: 72px; font-weight: bold; }")
+        self.text_label.setStyleSheet("QLabel { color: rgba(200, 200, 200, 200); font-size: 11px; }")
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event):
+        """Remove highlight when not hovering."""
+        self.hovered = False
+        self.square.setStyleSheet(
+            "QFrame { background: rgba(60, 60, 60, 200); border-radius: 20px; border: 2px solid rgba(100, 100, 100, 150); }"
+        )
+        self.icon_label.setStyleSheet("QLabel { color: rgba(150, 150, 150, 200); font-size: 72px; font-weight: bold; }")
+        self.text_label.setStyleSheet("QLabel { color: rgba(150, 150, 150, 150); font-size: 11px; }")
+        super().leaveEvent(event)
+    
+    def mousePressEvent(self, event):
+        """Open the add playlist dialog when clicked."""
+        if self.panel and hasattr(self.panel, '_on_add_clicked'):
+            self.panel._on_add_clicked()
+        super().mousePressEvent(event)
+    
+    def sizeHint(self):
+        return QSize(self.SQUARE_SIZE + 24, self.SQUARE_SIZE + 24 + 50)  # Extra space for text
+
+
 class PlaylistPanel(QWidget):
 
     PANEL_WIDTH = 400  # Base width; expands dynamically with playlist count
@@ -383,6 +450,8 @@ class PlaylistPanel(QWidget):
     playlist_selected = pyqtSignal(str)
     shuffle_requested = pyqtSignal(str)
     add_from_user_playlists_requested = pyqtSignal()
+    
+
 
     def _on_context_menu(self, pos):
         # Placeholder for right-click context menu on playlist items
@@ -479,54 +548,20 @@ class PlaylistPanel(QWidget):
         self.layout.setContentsMargins(12, 8, 12, 12)
         self.layout.setSpacing(0)
         
-        # Playlist grid (scrollable)
-        self.playlist_scroll = QScrollArea(self)
-        self.playlist_scroll.setWidgetResizable(True)
-        self.playlist_scroll.setFrameShape(QFrame.NoFrame)
-        self.playlist_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.playlist_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.playlist_scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self.playlist_scroll.setStyleSheet("background: transparent; border: none;")
-
-        self.playlist_container = QWidget(self.playlist_scroll)
+        # Playlist grid (no scrolling - expands upward)
+        self.playlist_container = QWidget(self)
         self.playlist_container.setStyleSheet("background: transparent;")
         self.playlist_grid = QGridLayout(self.playlist_container)
         self.playlist_grid.setContentsMargins(0, 0, 0, 0)
         self.playlist_grid.setSpacing(self.GRID_SPACING)
         self.playlist_grid.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
 
-        self.playlist_scroll.setWidget(self.playlist_container)
-        self.playlist_scroll.setVisible(False)
-        
-        # Playlist grid first
-        self.layout.addWidget(self.playlist_scroll, 1)
-        
-        # Hover zone spacer - spans full width to trigger button expansion
-        self.hover_zone = QWidget(self)
-        self.hover_zone.setFixedHeight(30)  # Adequate hover area
-        self.hover_zone.setStyleSheet("background: transparent;")
-        self.hover_zone.setCursor(Qt.PointingHandCursor)
-        self.hover_zone.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.hover_zone.installEventFilter(self)
-        self.layout.addWidget(self.hover_zone)  # Full width, not centered
-        
-        # Add button with hover fade effect (using stylesheet opacity to avoid QPainter conflicts)
-        self.add_btn = QPushButton("+ Add Playlist or Album", self)
-        self._add_btn_hovered = False  # Start collapsed
-        self.add_btn.clicked.connect(self._on_add_clicked)
-        self.add_btn.setCursor(Qt.PointingHandCursor)
-        self.add_btn.setFocusPolicy(Qt.NoFocus)
-        self.add_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self._update_add_btn_style()  # Apply collapsed style
-        
-        # Install event filter to detect hover on button
-        self.add_btn.installEventFilter(self)
-        
-        self.layout.addWidget(self.add_btn, 0, Qt.AlignHCenter)
+        # Add to main layout with stretch to allow upward expansion
+        self.layout.addWidget(self.playlist_container, 1, Qt.AlignHCenter | Qt.AlignTop)
         
         self._playlists = []
         self._user_playlists = []  # Preloaded user playlists
-        # No list widget signals needed; item widgets handle their own actions
+        self._show_add_square = True  # Track if add square should be visible
         
         # Update size based on content
         self._update_size()
@@ -575,40 +610,49 @@ class PlaylistPanel(QWidget):
         self.set_playlists(self._playlists)
 
     def _update_size(self):
-        """Update panel size based on number of playlists, with responsive max height."""
-        num_playlists = len(self._playlists)
-        if num_playlists == 0:
-            # Small panel with just the add button
-            target_height = self.MIN_HEIGHT
-            self.playlist_scroll.setVisible(False)
-        else:
-            # Expand to show playlists and add button
-            self.playlist_scroll.setVisible(True)
-            columns = min(num_playlists, 4)
-            rows = (num_playlists + 3) // 4
-            # Calculate height: items + add button + margins/spacing
-            target_height = (rows * self.ITEM_HEIGHT) + 60
-            
-            # Get screen geometry to determine max height dynamically
-            from PyQt5.QtWidgets import QApplication
-            screen = QApplication.primaryScreen()
-            if screen:
-                screen_height = screen.geometry().height()
-                # Max height is 60% of screen, but at least 400px and at most 800px
-                max_height = min(800, max(400, int(screen_height * 0.6)))
-            else:
-                max_height = 600  # Fallback
-            
-            # Cap at calculated maximum
-            target_height = min(target_height, max_height)
+        """Update panel size based on number of playlists.
         
-        if num_playlists > 0:
-            columns = min(num_playlists, 4)
+        Hides the add square when total height would exceed available space.
+        """
+        num_playlists = len(self._playlists)
+        
+        # Get screen geometry to determine available space
+        from PyQt5.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_height = screen.geometry().height()
+            # Max height is 70% of screen for dynamic content
+            max_height = int(screen_height * 0.7)
+        else:
+            max_height = 600  # Fallback
+        
+        # Calculate required height with add square
+        total_items_with_add = num_playlists + 1
+        columns = min(total_items_with_add, 4)
+        rows_with_add = (total_items_with_add + 3) // 4
+        height_with_add = (rows_with_add * self.ITEM_HEIGHT) + 40  # Add margins
+        
+        # Decide if we should show the add square
+        self._show_add_square = height_with_add <= max_height
+        
+        # Calculate actual items and height to display
+        if self._show_add_square:
+            total_items = total_items_with_add
+            target_height = height_with_add
+        else:
+            total_items = num_playlists
+            columns = min(total_items, 4)
+            rows = (total_items + 3) // 4 if total_items > 0 else 0
+            target_height = (rows * self.ITEM_HEIGHT) + 40 if total_items > 0 else 40
+        
+        # Calculate width based on actual displayed items
+        if total_items > 0:
+            columns = min(total_items, 4)
             content_width = (columns * self.ITEM_WIDTH) + ((columns - 1) * self.GRID_SPACING)
             self.playlist_container.setFixedWidth(content_width)
             target_width = max(self.PANEL_WIDTH, content_width + 24)
         else:
-            self.playlist_container.setMinimumWidth(0)
+            self.playlist_container.setFixedWidth(self.PANEL_WIDTH)
             target_width = self.PANEL_WIDTH
 
         self.setFixedWidth(target_width)
@@ -620,20 +664,46 @@ class PlaylistPanel(QWidget):
 
     def set_playlists(self, playlists, skip_save=False):
         self._playlists = playlists
-        # Repopulate the playlist grid
+        
+        # First, calculate if add square should be shown based on available space
+        self._update_size()
+        
+        # Repopulate the playlist grid based on calculated _show_add_square
         while self.playlist_grid.count():
             item = self.playlist_grid.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
+        # Calculate total number of items to determine grid layout
+        total_items = len(self._playlists) + (1 if self._show_add_square else 0)
+        
+        # Determine grid dimensions (4 columns)
+        columns = 4
+        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 0
+        
+        # Add all playlists in order to the grid
         for idx, pl in enumerate(self._playlists):
-            row = idx // 4
-            col = idx % 4
+            row = idx // columns
+            col = idx % columns
+            # Reverse row order so items grow upward (new rows appear at top)
+            display_row = total_rows - row - 1
             widget = PlaylistItemWidget(pl, panel=self, parent=self.playlist_container)
-            self.playlist_grid.addWidget(widget, row, col, alignment=Qt.AlignHCenter)
-        # Update size to accommodate playlists
+            self.playlist_grid.addWidget(widget, display_row, col, alignment=Qt.AlignHCenter)
+        
+        # Add the "Add Playlist" square at the end if there's space
+        if self._show_add_square:
+            add_idx = len(self._playlists)
+            row = add_idx // columns
+            col = add_idx % columns
+            # Reverse row order for add button too
+            display_row = total_rows - row - 1
+            add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
+            self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
+        
+        # Recalculate size after all widgets are added
         self._update_size()
+        
         # Trigger save unless explicitly skipped
         if not skip_save:
             self._emit_playlist_update()
@@ -646,44 +716,7 @@ class PlaylistPanel(QWidget):
             # Fallback for previous behavior
             self.parent().on_playlists_updated(self._playlists)
 
-    def _update_add_btn_style(self):
-        """Update add button style and size based on hover state."""
-        if self._add_btn_hovered:
-            # Fully visible and expanded on hover
-            self.add_btn.setStyleSheet(
-                "background: rgba(29, 185, 84, 255); color: rgba(255, 255, 255, 255); "
-                "border-radius: 8px; padding: 10px 16px; font-weight: bold;"
-            )
-            self.add_btn.setFixedHeight(40)  # Expand to normal size
-        else:
-            # Fully transparent and collapsed when not hovered
-            self.add_btn.setStyleSheet(
-                "background: rgba(29, 185, 84, 0); color: rgba(255, 255, 255, 0); "
-                "border-radius: 8px; padding: 10px 16px; font-weight: bold;"
-            )
-            self.add_btn.setFixedHeight(0)  # Collapse to zero height
-    
-    def eventFilter(self, obj, event):
-        """Event filter to handle hover events for add button and hover zone."""
-        if obj == self.add_btn or obj == self.hover_zone:
-            if event.type() == event.Enter:
-                # Show button on hover over either button or hover zone
-                self._add_btn_hovered = True
-                self._update_add_btn_style()
-            elif event.type() == event.Leave:
-                # Hide button when not hovering over either
-                # Check if cursor is still within the combined area
-                if obj == self.hover_zone:
-                    # If leaving hover zone, check if entering button
-                    if not self.add_btn.underMouse():
-                        self._add_btn_hovered = False
-                        self._update_add_btn_style()
-                elif obj == self.add_btn:
-                    # If leaving button, check if entering hover zone
-                    if not self.hover_zone.underMouse():
-                        self._add_btn_hovered = False
-                        self._update_add_btn_style()
-        return super().eventFilter(obj, event)
+
 
 
 

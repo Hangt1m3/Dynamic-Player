@@ -209,11 +209,12 @@ class SpotifyPlayer(QMainWindow):
         settings = QSettings("SpotifySync", "App")
         if settings.value("first_run", "true") == "true":
             tutorial_text = """
-            <h2>Welcome to Spotify Sync!</h2>
+            <h2>Welcome to Dynamic Player!</h2>
             <p>Here are some quick tips to get you started:</p>
             <ul>
-                <li><b>Play Music:</b> Start playing a song on any Spotify-connected device. The display will update automatically.</li>
-                <li><b>Settings:</b> Press the <b>C</b> key to open the settings panel. Here you can customize colors, fonts, and more for the current album.</li>
+                <li><b>Play Music:</b> Start playing a song on Spotify, Windows Media Player, or any compatible media source. The display will update automatically.</li>
+                <li><b>Media Support:</b> You can use Spotify (with API credentials), Windows Media Player, Apple Music, or other Windows media sources.</li>
+                <li><b>Settings:</b> Press the <b>C</b> key to open the settings panel. Here you can customize colors, fonts, light effects, and more for each album.</li>
                 <li><b>Fullscreen:</b> Press <b>F</b> to toggle fullscreen mode.</li>
                 <li><b>Multi-Monitor:</b> Press <b>F11</b> to span across all your monitors. Use the <b>&larr;</b> and <b>&rarr;</b> arrow keys to shift the content between screens.</li>
                 <li><b>Wallpaper Mode:</b> Press <b>F12</b> to enter a 'wallpaper' mode that sits behind your desktop icons. A tray icon will appear to let you exit this mode or open settings.</li>
@@ -236,7 +237,7 @@ class SpotifyPlayer(QMainWindow):
         self.art.setBorderColor(QColor("transparent"))
         self.art.setLoadingState(False)
 
-        self.title.setText("Spotify Sync")
+        self.title.setText("Dynamic Player")
         self.artist.setText("Play music on any device to begin")
         self.album_name.setText("Press 'C' for settings & controls")
         self._current_text_color = [200, 200, 200]
@@ -286,11 +287,19 @@ class SpotifyPlayer(QMainWindow):
         self.sp = None  # Initialize to None; will be set if credentials provided
         
         while True:
+            # Check if we should force Spotify setup (e.g., after reset with keep_data)
+            # This is inside the loop so it gets re-evaluated after the dialog closes
+            force_setup = settings.value("force_spotify_setup", "false") == "true"
+            
             client_id = settings.value("spotify_client_id")
             client_secret = settings.value("spotify_client_secret")
 
-            if not client_id or not client_secret:
+            if (not client_id or not client_secret) or force_setup:
                 did_show_setup_dialog = True
+                # Clear the force flag so it doesn't show again on next startup
+                settings.remove("force_spotify_setup")
+                settings.sync()
+                
                 dialog = SpotifySetupDialog()
                 result = dialog.exec_()
                 if result == SpotifySetupDialog.SKIP_CODE:
@@ -318,10 +327,10 @@ class SpotifyPlayer(QMainWindow):
                 print(f"Failed to initialize Spotify. Please check credentials. Error: {e}")
                 
                 # Show an error message to the user but don't auto-clear credentials (could be network issue)
-                msg = ThemedMessageBox("Authentication Error",
-                    f"Spotify Authentication Failed.\n\nError: {e}\n\n"
+                msg = ThemedMessageBox("Spotify Authentication Error",
+                    f"Spotify authentication failed.\n\nError: {e}\n\n"
                     "Do you want to reset your saved Client ID and Secret?\n"
-                    "(Yes to reset, No to retry, Cancel to skip Spotify)",
+                    "(Yes to reset and retry, No to retry with current details, Skip to use Windows Media Player instead)",
                     [("Yes", QDialog.Accepted), ("No", QDialog.Rejected), ("Skip", 2)], self, self._current_bg_color, self._current_text_color, QColor(100, 100, 100), self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size)
 
                 res = msg.exec_()

@@ -66,13 +66,77 @@ class ThemedMessageBox(ThemedDialog):
     # Copy ThemedMessageBox implementation...
     def __init__(self, title, message, buttons=None, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
         super().__init__(parent, title, bg_color, text_color, accent_color, border_enabled, border_color, border_width)
-        msg_label = BorderedLabel(message); msg_label.setBorder(border_enabled, self.border_color, border_width); msg_label.setCustomTextColor(self.text_color); msg_label.setWordWrap(True); self.content_layout.addWidget(msg_label)
+        
+        # Use QTextBrowser for proper HTML and word wrapping support
+        msg_browser = QTextBrowser()
+        msg_browser.setHtml(message)
+        msg_browser.setReadOnly(True)
+        msg_browser.setFrameShape(QFrame.NoFrame)
+        msg_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        msg_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Apply styling to match theme
+        msg_browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: transparent;
+                color: {self.text_color.name()};
+                border: none;
+                padding: 5px;
+            }}
+            QScrollBar:vertical {{
+                background-color: {self.bg_color.name()};
+                width: 8px;
+                border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {self.accent_color.name()};
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {self.accent_color.lighter(120).name()};
+            }}
+        """)
+        
+        self.content_layout.addWidget(msg_browser)
+        
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         if not buttons: buttons = [("OK", QDialog.Accepted)]
         for btn_text, role in buttons:
             btn = QPushButton(btn_text); btn.clicked.connect(lambda checked, r=role: self.finish(r)); btn_layout.addWidget(btn)
         self.content_layout.addLayout(btn_layout)
+        
+        # Auto-fit dialog size to content - delay slightly to allow layout to calculate
+        QTimer.singleShot(0, self._auto_fit_size)
+    
+    def _auto_fit_size(self):
+        """Auto-fit the dialog size based on the content."""
+        # Let the layout recalculate first
+        self.content_widget.adjustSize()
+        self.adjustSize()
+        
+        # Constrain to reasonable bounds
+        desktop_geo = QApplication.primaryScreen().geometry()
+        max_width = int(desktop_geo.width() * 0.7)  # 70% of screen width for better text display
+        max_height = int(desktop_geo.height() * 0.75)  # 75% of screen height
+        
+        current_width = self.width()
+        current_height = self.height()
+        
+        new_width = min(current_width, max_width)
+        new_width = max(new_width, 500)  # Increased minimum width for better text wrapping
+        new_height = min(current_height, max_height)
+        new_height = max(new_height, 250)  # Increased minimum height for better content display
+        
+        self.resize(new_width, new_height)
+        # Center the dialog on its parent
+        if self.parent():
+            parent_geo = self.parent().geometry()
+            self.move(
+                parent_geo.center().x() - new_width // 2,
+                parent_geo.center().y() - new_height // 2
+            )
+    
     def finish(self, result): self.done(result)
 
 # ... [Include SaveConfirmationDialog, FramelessColorDialog, FramelessFileDialog here] ...
@@ -81,18 +145,23 @@ class SpotifySetupDialog(ThemedDialog):
     SKIP_CODE = 2  # Custom code for skip action
     
     def __init__(self, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
-        super().__init__(parent, "Spotify API Setup", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
+        super().__init__(parent, "Spotify API Setup (Optional)", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
         
-        # Info text
-        info_label = QLabel("Enter your Spotify API credentials or skip to continue without Spotify:")
+        # Info text with emphasis on skip option
+        info_label = QLabel(
+            "<b>Set Up Spotify (Optional):</b><br><br>"
+            "To use Spotify playback, enter your API credentials below.<br>"
+            "If you don't have credentials yet, you can skip this and use Windows Media Player "
+            "or other media sources instead."
+        )
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
         
         id_label = QLabel("Client ID:"); secret_label = QLabel("Client Secret:")
         self.id_input = QLineEdit(); self.secret_input = QLineEdit()
-        self.id_input.setEchoMode(QLineEdit.Password);self.secret_input.setEchoMode(QLineEdit.Password)
+        self.id_input.setEchoMode(QLineEdit.Normal); self.secret_input.setEchoMode(QLineEdit.Password)
         
         # Load existing credentials
         settings = QSettings("SpotifySync", "App")
@@ -103,8 +172,8 @@ class SpotifySetupDialog(ThemedDialog):
         layout.addLayout(form_layout);
         
         btn_layout = QHBoxLayout()
-        skip_btn = QPushButton("Skip"); skip_btn.clicked.connect(self.skip)
-        save_btn = QPushButton("Save"); save_btn.setDefault(True); save_btn.clicked.connect(self.accept)
+        skip_btn = QPushButton("Skip & Use Media Player"); skip_btn.clicked.connect(self.skip); skip_btn.setMinimumWidth(150)
+        save_btn = QPushButton("Save Credentials"); save_btn.setDefault(True); save_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(skip_btn);btn_layout.addStretch();btn_layout.addWidget(cancel_btn);btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
@@ -883,6 +952,11 @@ class ColorEditorDialog(QDialog):
         self.clear_cache_btn = QPushButton("Clear Album Cache")
         self.clear_cache_btn.clicked.connect(self.confirm_clear_cache)
         data_layout.addWidget(self.clear_cache_btn)
+        
+        self.reset_app_btn = QPushButton("Reset Application")
+        self.reset_app_btn.clicked.connect(self.confirm_reset_app)
+        data_layout.addWidget(self.reset_app_btn)
+        
         global_layout.addWidget(data_group)
         
         global_layout.addStretch()
@@ -3374,3 +3448,127 @@ class ColorEditorDialog(QDialog):
             if msg2.exec_() == QDialog.Accepted:
                 self.color_cache.clear()
                 ThemedMessageBox("Success", "Album cache has been cleared.", [("OK", QDialog.Accepted)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value()).exec_()
+
+    def confirm_reset_app(self):
+        """Show initial reset dialog with 3 options."""
+        reset_msg = "What would you like to do?"
+        msg = ThemedMessageBox(
+            "Reset Player?",
+            reset_msg,
+            [
+                ("Yes, but keep my data", 1),
+                ("Yes, and erase my data", 2),
+                ("Cancel", QDialog.Rejected)
+            ],
+            self,
+            self.ui_bg_color,
+            self.ui_text_color,
+            self.ui_accent_color,
+            self.text_border_checkbox.isChecked(),
+            self.text_border_color,
+            self.text_border_size_slider.value()
+        )
+        
+        result = msg.exec_()
+        if result == 1:
+            self._confirm_reset_keep_data()
+        elif result == 2:
+            self._confirm_reset_erase_data()
+
+    def _confirm_reset_keep_data(self):
+        """Show confirmation dialog for reset with data kept."""
+        confirm_msg = (
+            "The app will close and restart, showing you the first-time setup dialogs.\n\n"
+            "Your saved album themes and customizations will be preserved.\n\n"
+            "You will be prompted to set up Spotify credentials again.\n\n"
+            "Continue?"
+        )
+        msg = ThemedMessageBox(
+            "Confirm Reset",
+            confirm_msg,
+            [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)],
+            self,
+            self.ui_bg_color,
+            self.ui_text_color,
+            self.ui_accent_color,
+            self.text_border_checkbox.isChecked(),
+            self.text_border_color,
+            self.text_border_size_slider.value()
+        )
+        
+        if msg.exec_() == QDialog.Accepted:
+            self._restart_app(erase_data=False)
+
+    def _confirm_reset_erase_data(self):
+        """Show confirmation dialog for reset with data erased."""
+        confirm_msg = (
+            "WARNING: This will erase ALL app data including:\n"
+            "- Saved credentials (Spotify, Govee)\n"
+            "- All album themes and customizations\n"
+            "- All cache and settings\n\n"
+            "The app will restart as if it's running for the first time.\n"
+            "This action cannot be undone.\n\n"
+            "Continue?"
+        )
+        msg = ThemedMessageBox(
+            "Confirm Full Reset",
+            confirm_msg,
+            [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)],
+            self,
+            self.ui_bg_color,
+            self.ui_text_color,
+            self.ui_accent_color,
+            self.text_border_checkbox.isChecked(),
+            self.text_border_color,
+            self.text_border_size_slider.value()
+        )
+        
+        if msg.exec_() == QDialog.Accepted:
+            self._restart_app(erase_data=True)
+
+    def _restart_app(self, erase_data=False):
+        """Restart the application, optionally clearing all data.
+        
+        If erase_data is False: Closes and restarts the app showing first-time setup dialogs,
+                                but keeps saved themes, playlists, and other user data.
+                                Saved credentials are preserved and pre-filled in setup dialogs.
+        If erase_data is True: Clears everything and restarts as if app never ran before.
+        """
+        import sys
+        
+        settings = QSettings("SpotifySync", "App")
+        
+        if erase_data:
+            # Clear ALL settings when erasing data
+            settings.clear()
+            settings.sync()
+            # Also clear the color cache
+            if hasattr(self, 'color_cache'):
+                self.color_cache.clear()
+        else:
+            # Keep data mode: Preserve credentials but force re-setup dialogs
+            # Keep spotify credentials - they will be pre-filled in the setup dialog
+            # Just set a flag to force the Spotify setup dialog to show
+            settings.setValue("force_spotify_setup", "true")
+            # This shows the welcome dialog
+            settings.setValue("first_run", "true")
+            settings.sync()
+        
+        # Close the settings dialog and main window to fully release resources
+        self.close()
+        
+        # Close the main window first and wait a bit for proper cleanup
+        QApplication.instance().processEvents()
+        
+        # Give the application a moment to fully clean up before restarting
+        QTimer.singleShot(500, lambda: self._do_restart())
+    
+    def _do_restart(self):
+        """Actually restart the application after cleanup."""
+        import sys
+        
+        # Start a new instance of the application
+        QProcess.startDetached(sys.executable, sys.argv)
+        
+        # Now quit the current application
+        QApplication.instance().quit()

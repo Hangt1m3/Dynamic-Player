@@ -51,15 +51,24 @@ class OverlayWidget(QWidget):
         self.notif_mode_button = CircularButton(tooltip="Notification Only Mode", icon_char="📬")
         self.notif_mode_button.setFocusPolicy(Qt.NoFocus)
         
+        self.fullscreen_button = CircularButton(tooltip="Toggle Fullscreen", icon_char="⛶")
+        self.fullscreen_button.setFocusPolicy(Qt.NoFocus)
+        
+        self.switch_monitor_button = CircularButton(tooltip="Switch Monitor", icon_char="🔄")
+        self.switch_monitor_button.setFocusPolicy(Qt.NoFocus)
+        
         # FIX: Set FocusPolicy to NoFocus for all buttons.
         # This ensures clicking them doesn't steal focus from the main window,
         # allowing arrow keys and other binds to keep working.
         buttons = [self.settings_button, self.lights_button, self.multi_monitor_button, 
-                   self.wallpaper_button, self.notif_mode_button]
+                   self.wallpaper_button, self.notif_mode_button, self.fullscreen_button,
+                   self.switch_monitor_button]
         for btn in buttons: btn.setFocusPolicy(Qt.NoFocus)
         
         container_layout.addWidget(self.settings_button)
         container_layout.addWidget(self.lights_button)
+        container_layout.addWidget(self.fullscreen_button)
+        container_layout.addWidget(self.switch_monitor_button)
         container_layout.addWidget(self.multi_monitor_button)
         container_layout.addWidget(self.wallpaper_button)
         container_layout.addWidget(self.notif_mode_button)
@@ -182,21 +191,26 @@ class NotificationContent(QWidget):
         self.radius = 12
         
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        bg = QColor(self.bg_color)
-        bg.setAlpha(self.bg_opacity)
-        path = QPainterPath()
-        rect = QRectF(self.rect())
-        if self.border_enabled:
-            rect = rect.adjusted(1, 1, -1, -1)
-        path.addRoundedRect(rect, self.radius, self.radius)
-        painter.fillPath(path, bg)
-        if self.border_enabled:
-            pen = QPen(self.border_color)
-            pen.setWidth(2)
-            painter.setPen(pen)
-            painter.drawPath(path)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            bg = QColor(self.bg_color)
+            bg.setAlpha(self.bg_opacity)
+            path = QPainterPath()
+            rect = QRectF(self.rect())
+            if self.border_enabled:
+                rect = rect.adjusted(1, 1, -1, -1)
+            path.addRoundedRect(rect, self.radius, self.radius)
+            painter.fillPath(path, bg)
+            if self.border_enabled:
+                pen = QPen(self.border_color)
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.drawPath(path)
+        finally:
+            painter.end()
 
 class NotificationWidget(QWidget):
     clicked = pyqtSignal()

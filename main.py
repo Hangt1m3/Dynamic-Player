@@ -183,6 +183,8 @@ class SpotifyPlayer(QMainWindow):
         self.overlay.hide()
         self.overlay.settings_button.clicked.connect(self.open_settings_dialog)
         self.overlay.lights_button.clicked.connect(self.toggle_lights)
+        self.overlay.fullscreen_button.clicked.connect(self.toggle_fullscreen_mode)
+        self.overlay.switch_monitor_button.clicked.connect(self.switch_monitor)
         self.overlay.multi_monitor_button.clicked.connect(self.toggle_multi_monitor_fullscreen)
         self.overlay.wallpaper_button.clicked.connect(self.toggle_wallpaper_mode)
         self.overlay.notif_mode_button.clicked.connect(self.toggle_notification_only_mode)
@@ -681,7 +683,7 @@ class SpotifyPlayer(QMainWindow):
         pass
 
     def _on_playlist_selected(self, playlist_ref):
-        # Play the selected playlist or album
+        # Play the selected playlist or album from the start with shuffle OFF
         print(f"Playing playlist/album with ID: {playlist_ref}")
         if not self.sp:
             print("Error: Spotify API not configured. Cannot play playlists/albums.")
@@ -698,11 +700,15 @@ class SpotifyPlayer(QMainWindow):
                 print("Error: Could not resolve playlist URI for playback")
                 return
             device_id = self._get_active_device_id(sp)
+            # Turn off shuffle first to ensure sequential playback
             if device_id:
-                sp.start_playback(device_id=device_id, context_uri=context_uri)
+                sp.shuffle(False, device_id=device_id)
+                # Start playback from the beginning (position 0)
+                sp.start_playback(device_id=device_id, context_uri=context_uri, offset={"position": 0})
             else:
-                sp.start_playback(context_uri=context_uri)
-            print(f"Successfully started playback for playlist: {playlist_id or playlist_ref}")
+                sp.shuffle(False)
+                sp.start_playback(context_uri=context_uri, offset={"position": 0})
+            print(f"Successfully started playback for playlist: {playlist_id or playlist_ref} (shuffle OFF)")
         except Exception as e:
             print(f"Error playing playlist: {e}")
             # Check if it's a device issue
@@ -716,7 +722,7 @@ class SpotifyPlayer(QMainWindow):
                 pass
 
     def _on_shuffle_playlist(self, playlist_ref):
-        # Play the selected playlist or album with shuffle enabled
+        # Play the selected playlist or album with shuffle enabled from the start
         print(f"Shuffling and playing playlist/album with ID: {playlist_ref}")
         if not self.sp:
             print("Error: Spotify API not configured. Cannot play playlists/albums.")
@@ -733,13 +739,15 @@ class SpotifyPlayer(QMainWindow):
                 print("Error: Could not resolve playlist URI for shuffle playback")
                 return
             device_id = self._get_active_device_id(sp)
+            # Enable shuffle first, then start playback from the beginning
             if device_id:
-                sp.start_playback(device_id=device_id, context_uri=context_uri)
                 sp.shuffle(True, device_id=device_id)
+                # Start playback from the beginning (position 0) with shuffle enabled
+                sp.start_playback(device_id=device_id, context_uri=context_uri, offset={"position": 0})
             else:
-                sp.start_playback(context_uri=context_uri)
                 sp.shuffle(True)
-            print(f"Successfully started shuffled playback for playlist: {playlist_id or playlist_ref}")
+                sp.start_playback(context_uri=context_uri, offset={"position": 0})
+            print(f"Successfully started shuffled playback for playlist: {playlist_id or playlist_ref} (shuffle ON)")
         except Exception as e:
             print(f"Error shuffling playlist: {e}")
             # Check if it's a device issue
@@ -1772,37 +1780,42 @@ class SpotifyPlayer(QMainWindow):
             self.blob_manager.adjust_blob_count()
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
 
-        is_rounded = not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode)
-        path = QPainterPath()
-        if is_rounded:
-            path.addRoundedRect(QRectF(self.rect()), 20, 20)
-        else:
-            path.addRect(QRectF(self.rect()))
+            is_rounded = not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode)
+            path = QPainterPath()
+            if is_rounded:
+                path.addRoundedRect(QRectF(self.rect()), 20, 20)
+            else:
+                path.addRect(QRectF(self.rect()))
 
-        painter.setClipPath(path)
+            painter.setClipPath(path)
 
-        if self._bg_crossfade_lerp >= 1.0:
-            painter.fillPath(path, self._current_bg_color)
-        else:
-            painter.fillPath(path, self._old_bg_color)
-            painter.setOpacity(self._bg_crossfade_lerp)
-            painter.fillPath(path, self._current_bg_color)
+            if self._bg_crossfade_lerp >= 1.0:
+                painter.fillPath(path, self._current_bg_color)
+            else:
+                painter.fillPath(path, self._old_bg_color)
+                painter.setOpacity(self._bg_crossfade_lerp)
+                painter.fillPath(path, self._current_bg_color)
 
-        if self.blob_manager:
-            # SmoothPixmapTransform is a good quality/performance tradeoff for the blobs.
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            for blob in self.blob_manager.blobs + self.blob_manager.dying_blobs:
-                if not blob.pixmap or blob.opacity <= 0.01: continue
-                painter.setOpacity(blob.opacity)
-                
-                r = blob.radius * blob.scale
-                target_rect = QRectF(blob.center.x() - r, blob.center.y() - r, r * 2, r * 2)
-                painter.drawPixmap(target_rect, blob.pixmap, QRectF(blob.pixmap.rect()))
+            if self.blob_manager:
+                # SmoothPixmapTransform is a good quality/performance tradeoff for the blobs.
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                for blob in self.blob_manager.blobs + self.blob_manager.dying_blobs:
+                    if not blob.pixmap or blob.opacity <= 0.01: continue
+                    painter.setOpacity(blob.opacity)
+                    
+                    r = blob.radius * blob.scale
+                    target_rect = QRectF(blob.center.x() - r, blob.center.y() - r, r * 2, r * 2)
+                    painter.drawPixmap(target_rect, blob.pixmap, QRectF(blob.pixmap.rect()))
 
-        painter.setOpacity(1.0) 
+            painter.setOpacity(1.0)
+        finally:
+            painter.end() 
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2125,6 +2138,78 @@ class SpotifyPlayer(QMainWindow):
         else:
             print("Error: Could not create QPixmap from PIL image data")
         
+    def toggle_fullscreen_mode(self):
+        """Toggle between fullscreen and windowed mode on current monitor."""
+        self._remember_overlay_visibility()
+        if self.is_fullscreen and not self.multi_monitor_mode and not self.is_wallpaper_mode:
+            # Exit fullscreen to windowed mode
+            self.is_fullscreen = False
+            self.showNormal()
+            # Restore to last windowed size/position if available
+            if hasattr(self, '_windowed_geometry'):
+                self.setGeometry(self._windowed_geometry)
+            else:
+                # Default windowed size
+                screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+                geo = screen.availableGeometry()
+                w, h = 800, 600
+                self.setGeometry((geo.width() - w) // 2, (geo.height() - h) // 2, w, h)
+        else:
+            # Save windowed geometry before going fullscreen
+            if not self.is_fullscreen:
+                self._windowed_geometry = self.geometry()
+            # Enter fullscreen on current monitor
+            self.is_fullscreen = True
+            self.multi_monitor_mode = False
+            self.is_wallpaper_mode = False
+            self.showFullScreen()
+        QTimer.singleShot(0, self._restore_overlay_visibility)
+    
+    def switch_monitor(self):
+        """Cycle to the next monitor."""
+        screens = QApplication.screens()
+        if len(screens) < 2:
+            return  # Only one monitor, do nothing
+        
+        screens.sort(key=lambda s: (s.geometry().x(), s.geometry().y()))
+        self._remember_overlay_visibility()
+        
+        current_screen = QApplication.screenAt(self.geometry().center())
+        if not current_screen:
+            current_screen = screens[0]
+        
+        try:
+            index = screens.index(current_screen)
+        except ValueError:
+            index = 0
+        
+        # Cycle to next monitor
+        new_index = (index + 1) % len(screens)
+        new_screen = screens[new_index]
+        
+        self.notification_widget.hide()
+        
+        if self.is_fullscreen and not self.multi_monitor_mode:
+            # Move fullscreen to new monitor
+            self.showNormal()
+            if self.windowHandle():
+                self.windowHandle().setScreen(new_screen)
+            self.setGeometry(new_screen.geometry())
+            self.showFullScreen()
+        else:
+            # Move window to new monitor center
+            geo = new_screen.availableGeometry()
+            w, h = self.width(), self.height()
+            x = geo.x() + (geo.width() - w) // 2
+            y = geo.y() + (geo.height() - h) // 2
+            self.setGeometry(x, y, w, h)
+        
+        QTimer.singleShot(100, lambda: (
+            self.update_layout(),
+            self._update_text_properties(),
+            self._restore_overlay_visibility()
+        ))
+    
     def toggle_multi_monitor_fullscreen(self):
         self._remember_overlay_visibility()
         screens = QApplication.screens()

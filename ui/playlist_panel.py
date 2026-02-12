@@ -1,32 +1,86 @@
-from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QScrollArea, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication
 from PyQt5.QtGui import QColor, QPixmap, QCursor, QPainter, QBrush, QPainterPath, QBitmap
 import requests
 
-def create_rounded_pixmap(pixmap, radius=12):
-    """Create a pixmap with rounded corners."""
+def create_rounded_pixmap(pixmap, radius=12, target_size=None):
+    """Create a pixmap with rounded corners. Scales to target_size first if provided."""
     if pixmap.isNull():
         return pixmap
+    
+    # Scale to target size first if provided
+    if target_size:
+        pixmap = pixmap.scaled(target_size, target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        # Crop to square if needed
+        if pixmap.width() != target_size or pixmap.height() != target_size:
+            x = (pixmap.width() - target_size) // 2
+            y = (pixmap.height() - target_size) // 2
+            pixmap = pixmap.copy(x, y, target_size, target_size)
     
     size = pixmap.size()
     rounded = QPixmap(size)
     rounded.fill(Qt.transparent)
     
-    painter = QPainter(rounded)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    painter = QPainter()
+    if not painter.begin(rounded):
+        print("Failed to begin painting on rounded pixmap")
+        return pixmap
     
-    # Create a path with rounded corners
-    from PyQt5.QtGui import QPainterPath
-    path = QPainterPath()
-    path.addRoundedRect(0, 0, size.width(), size.height(), radius, radius)
-    
-    # Clip to rounded path and draw pixmap
-    painter.setClipPath(path)
-    painter.drawPixmap(0, 0, pixmap)
-    painter.end()
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        
+        # Create a path with rounded corners
+        from PyQt5.QtGui import QPainterPath
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, size.width(), size.height(), radius, radius)
+        
+        # Clip to rounded path and draw pixmap
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, pixmap)
+    finally:
+        painter.end()
     
     return rounded
+
+class OverlayFrame(QFrame):
+    """Custom overlay frame that paints with manual opacity to avoid QGraphicsOpacityEffect conflicts."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._opacity = 0.0
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+    
+    @pyqtProperty(float)
+    def opacity(self):
+        return self._opacity
+    
+    @opacity.setter
+    def opacity(self, value):
+        self._opacity = value
+        self.update()
+    
+    def setOpacity(self, value):
+        self._opacity = value
+        self.update()
+    
+    def paintEvent(self, event):
+        if self._opacity <= 0.0:
+            return  # Don't paint if invisible
+        
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            # Draw rounded rectangle with current opacity - radius 20 to match cover art
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), 20, 20)
+            color = QColor(0, 0, 0, int(220 * self._opacity))
+            painter.fillPath(path, color)
+        finally:
+            painter.end()
 
 class PlaylistItemWidget(QFrame):
     SQUARE_SIZE = 196  # Larger to fill the card
@@ -39,11 +93,14 @@ class PlaylistItemWidget(QFrame):
         self.setStyleSheet("background: transparent; border: none;")
         self.setMouseTracking(True)
         self.hovered = False
+        self._overlay_opacity = 0.0  # For fade animation
+        self._play_scale = 1.0
+        self._shuffle_scale = 1.0
         self.cover_label = QLabel(self)
         self.cover_label.setFixedSize(self.SQUARE_SIZE, self.SQUARE_SIZE)
         self.cover_label.move(12, 12)
-        self.cover_label.setStyleSheet("border-radius: 12px; background: #222;")
-        self.cover_label.setScaledContents(True)
+        self.cover_label.setStyleSheet("background: transparent;")
+        self.cover_label.setScaledContents(False)
         # Load cover art: prefer cached base64, then try Spotify images, then cover URL
         import base64
         cover_b64 = playlist.get('cover_art_b64')
@@ -52,14 +109,14 @@ class PlaylistItemWidget(QFrame):
                 pixmap = QPixmap()
                 img_data = base64.b64decode(cover_b64)
                 if pixmap.loadFromData(img_data):
-                    rounded_pixmap = create_rounded_pixmap(pixmap, radius=12)
+                    rounded_pixmap = create_rounded_pixmap(pixmap, radius=20, target_size=self.SQUARE_SIZE)
                     self.cover_label.setPixmap(rounded_pixmap)
                 else:
                     print(f"Failed to load pixmap for playlist: {playlist.get('name')}")
-                    self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
+                    self.cover_label.setStyleSheet("background: #222;")
             except Exception as e:
                 print(f"Error decoding cover art for {playlist.get('name')}: {e}")
-                self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
+                self.cover_label.setStyleSheet("background: #222; border-radius: 20px;")
         else:
             # Try Spotify images first (from user playlists)
             images = playlist.get('images', [])
@@ -72,13 +129,13 @@ class PlaylistItemWidget(QFrame):
                         if resp.status_code == 200:
                             pixmap = QPixmap()
                             if pixmap.loadFromData(resp.content):
-                                rounded_pixmap = create_rounded_pixmap(pixmap, radius=12)
+                                rounded_pixmap = create_rounded_pixmap(pixmap, radius=20, target_size=self.SQUARE_SIZE)
                                 self.cover_label.setPixmap(rounded_pixmap)
                             else:
-                                self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
+                                self.cover_label.setStyleSheet("background: #222;")
                 except Exception as e:
                     print(f"Error fetching Spotify image for {playlist.get('name')}: {e}")
-                    self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
+                    self.cover_label.setStyleSheet("background: #222;")
             else:
                 # Try cover_url as fallback
                 cover_url = playlist.get('cover_url')
@@ -88,66 +145,81 @@ class PlaylistItemWidget(QFrame):
                         if resp.status_code == 200:
                             pixmap = QPixmap()
                             if pixmap.loadFromData(resp.content):
-                                rounded_pixmap = create_rounded_pixmap(pixmap, radius=12)
+                                rounded_pixmap = create_rounded_pixmap(pixmap, radius=20, target_size=self.SQUARE_SIZE)
                                 self.cover_label.setPixmap(rounded_pixmap)
                             else:
-                                self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
+                                self.cover_label.setStyleSheet("background: #222;")
                     except Exception as e:
                         print(f"Error fetching cover art from URL for {playlist.get('name')}: {e}")
-                        self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
+                        self.cover_label.setStyleSheet("background: #222;")
                 else:
                     # fallback: blank
-                    self.cover_label.setStyleSheet("background: #222; border-radius: 12px;")
-        # Overlay for details/buttons - use QFrame for proper rounded corner clipping
-        self.overlay = QFrame(self)
+                    self.cover_label.setStyleSheet("background: #222;")
+        # Overlay for details/buttons - custom widget with manual opacity
+        self.overlay = OverlayFrame(self)
         self.overlay.setGeometry(12, 12, self.SQUARE_SIZE, self.SQUARE_SIZE)
-        # Set rounded corners with QFrame styling - darker background for hover darkening effect
-        self.overlay.setStyleSheet("""
-            QFrame {
-                background: rgba(0,0,0,220);
-                border-radius: 12px;
-            }
-        """)
-        self.overlay.setLineWidth(0)
-        self.overlay.setFrameStyle(QFrame.StyledPanel)
-        # Apply a rounded rectangle mask to ensure perfect clipping to the corners
-        mask = QPixmap(self.SQUARE_SIZE, self.SQUARE_SIZE)
-        mask.fill(Qt.transparent)
-        mask_painter = QPainter(mask)
-        mask_painter.setRenderHint(QPainter.Antialiasing, True)
-        mask_painter.fillRect(mask.rect(), Qt.white)
-        mask_path = QPainterPath()
-        mask_path.addRoundedRect(0, 0, self.SQUARE_SIZE, self.SQUARE_SIZE, 12, 12)
-        mask_painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-        mask_painter.fillPath(mask_path, Qt.white)
-        mask_painter.end()
-        # Convert pixmap to bitmap for setMask()
-        mask_bitmap = QBitmap(mask)
-        self.overlay.setMask(mask_bitmap)
-        self.overlay.hide()
+        self.overlay.setOpacity(0.0)  # Start invisible
+        self.overlay.show()  # Keep visible for event handling
         vbox = QVBoxLayout(self.overlay)
-        vbox.setContentsMargins(16, 16, 16, 16)
-        vbox.setSpacing(10)
+        vbox.setContentsMargins(12, 12, 12, 12)
+        vbox.setSpacing(6)
+        
+        # Top stretch for vertical centering
+        vbox.addStretch(2)
+        
+        # Title vertically centered with more space
         self.name_label = QLabel(playlist['name'], self.overlay)
-        self.name_label.setStyleSheet("color: white; font-size: 18px; font-weight: bold;")
-        vbox.addWidget(self.name_label)
+        # Dynamic font sizing based on text length
+        font_size = self._calculate_font_size(playlist['name'])
+        self.name_label.setStyleSheet(f"color: white; font-size: {font_size}px; font-weight: bold; background: transparent; padding: 8px;")
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setWordWrap(True)
+        self.name_label.setMaximumHeight(120)  # Even more vertical space for title
+        # Start hidden
+        self.name_label.setVisible(False)
+        vbox.addWidget(self.name_label, 0, Qt.AlignCenter)
+        
+        # Middle stretch
+        vbox.addStretch(2)
+        
+        vbox.addSpacing(8)
+        
+        # Button row near bottom
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
         self.play_btn = QPushButton("▶", self.overlay)
-        self.play_btn.setFixedSize(40, 40)
-        self.play_btn.setStyleSheet("background: #1db954; color: white; border-radius: 20px; font-weight: bold; font-size: 22px;")
+        self.play_btn.setFixedSize(32, 32)
+        self.play_btn.setStyleSheet("background: #1db954; color: white; border-radius: 16px; font-weight: bold; font-size: 16px;")
+        self.play_btn.setVisible(False)  # Start hidden
         self.shuffle_btn = QPushButton("🔀", self.overlay)
-        self.shuffle_btn.setFixedSize(40, 40)
-        self.shuffle_btn.setStyleSheet("background: #333; color: #1db954; border-radius: 20px; font-weight: bold; font-size: 22px;")
+        self.shuffle_btn.setFixedSize(32, 32)
+        self.shuffle_btn.setStyleSheet("background: #333; color: #1db954; border-radius: 16px; font-weight: bold; font-size: 16px;")
+        self.shuffle_btn.setVisible(False)  # Start hidden
+        btn_row.addStretch(1)
         btn_row.addWidget(self.play_btn)
         btn_row.addWidget(self.shuffle_btn)
+        btn_row.addStretch(1)
         vbox.addLayout(btn_row)
-        # Delete button row
+        
+        vbox.addSpacing(6)
+        
+        # Delete button row at bottom
         delete_row = QHBoxLayout()
         self.delete_btn = QPushButton("🗑", self.overlay)
-        self.delete_btn.setFixedSize(28, 28)
-        self.delete_btn.setStyleSheet("background: #d32f2f; color: white; border-radius: 14px; font-weight: bold; font-size: 14px;")
+        self.delete_btn.setFixedSize(18, 18)
+        self.delete_btn.setStyleSheet("background: #d32f2f; color: white; border-radius: 9px; font-weight: bold; font-size: 10px;")
+        self.delete_btn.setVisible(False)  # Start hidden
+        delete_row.addStretch(1)
         delete_row.addWidget(self.delete_btn)
+        delete_row.addStretch(1)
         vbox.addLayout(delete_row)
+        
+        # Raise buttons above overlay to ensure visibility
+        self.play_btn.raise_()
+        self.shuffle_btn.raise_()
+        self.delete_btn.raise_()
+        self.name_label.raise_()
+        
         self.setCursor(QCursor(Qt.PointingHandCursor))
         self.play_btn.setFocusPolicy(Qt.NoFocus)
         self.shuffle_btn.setFocusPolicy(Qt.NoFocus)
@@ -155,16 +227,112 @@ class PlaylistItemWidget(QFrame):
         self.play_btn.clicked.connect(self._on_play)
         self.shuffle_btn.clicked.connect(self._on_shuffle)
         self.delete_btn.clicked.connect(self._on_delete)
+        
+        # Enable mouse tracking for buttons to handle hover effects
+        self.play_btn.installEventFilter(self)
+        self.shuffle_btn.installEventFilter(self)
+        
+        # Animation setup
+        self.overlay_fade_anim = QPropertyAnimation(self.overlay, b"opacity")
+        self.overlay_fade_anim.setDuration(200)
+        self.overlay_fade_anim.setEasingCurve(QEasingCurve.InOutCubic)
+    
+    def _calculate_font_size(self, text):
+        """Calculate optimal font size based on text length to fit in square."""
+        text_len = len(text)
+        if text_len <= 12:
+            return 18  # Short text - larger font
+        elif text_len <= 20:
+            return 16  # Medium text
+        elif text_len <= 30:
+            return 14  # Long text
+        elif text_len <= 45:
+            return 12  # Longer text
+        else:
+            return 10  # Very long text - smallest font
 
     def sizeHint(self):
         return QSize(self.SQUARE_SIZE + 24, self.SQUARE_SIZE + 24)
+    
+    @pyqtProperty(float)
+    def playScale(self):
+        return self._play_scale
+    
+    @playScale.setter
+    def playScale(self, value):
+        self._play_scale = value
+        w = int(32 * value)
+        h = int(32 * value)
+        self.play_btn.setFixedSize(w, h)
+        # Update font size proportionally
+        font_size = int(16 * value)
+        radius = w // 2
+        self.play_btn.setStyleSheet(f"background: #1db954; color: white; border-radius: {radius}px; font-weight: bold; font-size: {font_size}px;")
+    
+    @pyqtProperty(float)
+    def shuffleScale(self):
+        return self._shuffle_scale
+    
+    @shuffleScale.setter
+    def shuffleScale(self, value):
+        self._shuffle_scale = value
+        w = int(32 * value)
+        h = int(32 * value)
+        self.shuffle_btn.setFixedSize(w, h)
+        # Update font size proportionally
+        font_size = int(16 * value)
+        radius = w // 2
+        self.shuffle_btn.setStyleSheet(f"background: #333; color: #1db954; border-radius: {radius}px; font-weight: bold; font-size: {font_size}px;")
+    
+    def eventFilter(self, obj, event):
+        if obj == self.play_btn:
+            if event.type() == event.Enter:
+                self._animate_button_scale(self.play_btn, 1.15, 'play')
+            elif event.type() == event.Leave:
+                self._animate_button_scale(self.play_btn, 1.0, 'play')
+        elif obj == self.shuffle_btn:
+            if event.type() == event.Enter:
+                self._animate_button_scale(self.shuffle_btn, 1.15, 'shuffle')
+            elif event.type() == event.Leave:
+                self._animate_button_scale(self.shuffle_btn, 1.0, 'shuffle')
+        return super().eventFilter(obj, event)
+    
+    def _animate_button_scale(self, button, target_scale, button_type):
+        """Animate button scale with easing."""
+        prop_name = b'playScale' if button_type == 'play' else b'shuffleScale'
+        anim = QPropertyAnimation(self, prop_name)
+        anim.setDuration(150)
+        anim.setEndValue(target_scale)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+        # Store animation to prevent garbage collection
+        if button_type == 'play':
+            self._play_anim = anim
+        else:
+            self._shuffle_anim = anim
 
     def enterEvent(self, event):
-        self.overlay.show()
+        self.overlay_fade_anim.stop()
+        self.overlay_fade_anim.setStartValue(self.overlay._opacity)
+        self.overlay_fade_anim.setEndValue(1.0)
+        self.overlay_fade_anim.start()
+        # Show buttons and text on hover
+        self.name_label.setVisible(True)
+        self.play_btn.setVisible(True)
+        self.shuffle_btn.setVisible(True)
+        self.delete_btn.setVisible(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.overlay.hide()
+        self.overlay_fade_anim.stop()
+        self.overlay_fade_anim.setStartValue(self.overlay._opacity)
+        self.overlay_fade_anim.setEndValue(0.0)
+        self.overlay_fade_anim.start()
+        # Hide buttons and text when not hovering
+        self.name_label.setVisible(False)
+        self.play_btn.setVisible(False)
+        self.shuffle_btn.setVisible(False)
+        self.delete_btn.setVisible(False)
         super().leaveEvent(event)
 
     def _on_play(self):
@@ -333,14 +501,34 @@ class PlaylistPanel(QWidget):
         # Playlist grid first
         self.layout.addWidget(self.playlist_scroll, 1)
         
-        # Add button (always visible) - placed last so it's at the bottom
+        # Minimal spacing to close gap
+        self.layout.addSpacing(2)
+        
+        # Hover zone spacer - spans full width to trigger button expansion
+        self.hover_zone = QWidget(self)
+        self.hover_zone.setFixedHeight(12)  # Small hover area to close gap
+        self.hover_zone.setStyleSheet("background: transparent;")
+        self.hover_zone.setCursor(Qt.PointingHandCursor)
+        self.hover_zone.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.hover_zone.installEventFilter(self)
+        self.layout.addWidget(self.hover_zone)  # Full width, not centered
+        
+        # Add button with hover fade effect (using stylesheet opacity to avoid QPainter conflicts)
         self.add_btn = QPushButton("+ Add Playlist or Album", self)
-        self.add_btn.setStyleSheet("background: #1db954; color: #fff; border-radius: 8px; padding: 10px 16px; font-weight: bold;")
+        self._add_btn_hovered = False  # Start collapsed
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.setInterval(100)  # 100ms delay before collapsing
+        self._collapse_timer.timeout.connect(self._check_and_collapse)
         self.add_btn.clicked.connect(self._on_add_clicked)
         self.add_btn.setCursor(Qt.PointingHandCursor)
         self.add_btn.setFocusPolicy(Qt.NoFocus)
         self.add_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.layout.addSpacing(4)
+        self._update_add_btn_style()  # Apply collapsed style
+        
+        # Install event filter to detect hover on button
+        self.add_btn.installEventFilter(self)
+        
         self.layout.addWidget(self.add_btn, 0, Qt.AlignHCenter)
         
         self._playlists = []
@@ -464,6 +652,42 @@ class PlaylistPanel(QWidget):
         elif hasattr(self.parent(), 'on_playlists_updated'):
             # Fallback for previous behavior
             self.parent().on_playlists_updated(self._playlists)
+
+    def _update_add_btn_style(self):
+        """Update add button style and size based on hover state."""
+        if self._add_btn_hovered:
+            # Fully visible and expanded on hover
+            self.add_btn.setStyleSheet(
+                "background: rgba(29, 185, 84, 255); color: rgba(255, 255, 255, 255); "
+                "border-radius: 8px; padding: 10px 16px; font-weight: bold;"
+            )
+            self.add_btn.setFixedHeight(40)  # Expand to normal size
+        else:
+            # Fully transparent and collapsed when not hovered
+            self.add_btn.setStyleSheet(
+                "background: rgba(29, 185, 84, 0); color: rgba(255, 255, 255, 0); "
+                "border-radius: 8px; padding: 10px 16px; font-weight: bold;"
+            )
+            self.add_btn.setFixedHeight(0)  # Collapse to zero height
+    
+    def _check_and_collapse(self):
+        """Check if cursor is still over hover area before collapsing."""
+        if not self.hover_zone.underMouse() and not self.add_btn.underMouse():
+            self._add_btn_hovered = False
+            self._update_add_btn_style()
+    
+    def eventFilter(self, obj, event):
+        """Event filter to handle hover events for add button and hover zone."""
+        if obj == self.add_btn or obj == self.hover_zone:
+            if event.type() == event.Enter:
+                # Stop any pending collapse and show button
+                self._collapse_timer.stop()
+                self._add_btn_hovered = True
+                self._update_add_btn_style()
+            elif event.type() == event.Leave:
+                # Delay collapse to prevent flickering
+                self._collapse_timer.start()
+        return super().eventFilter(obj, event)
 
 
 

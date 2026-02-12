@@ -1,0 +1,30 @@
+# Dynamic Player - Python Dependencies
+# Install all requirements with: pip install -r requirements.txt
+
+# Core GUI Framework
+PyQt5>=5.15.0
+PyQt5-Qt5>=5.15.0
+PyQt5-sip>=12.8.0
+
+# Image Processing
+Pillow>=9.0.0
+
+# Scientific Computing
+numpy>=1.21.0
+scikit-learn>=1.0.0
+
+# Spotify Integration
+spotipy>=2.19.0
+
+# HTTP Requests
+requests>=2.27.0
+urllib3>=1.26.0
+certifi>=2021.10.8
+charset-normalizer>=2.0.0
+idna>=3.3
+
+# Windows Media Control (Windows only)
+winsdk>=1.0.0b7; sys_platform == 'win32'
+
+# PyInstaller for building executable
+pyinstaller>=5.0.0

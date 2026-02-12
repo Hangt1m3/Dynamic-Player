@@ -131,9 +131,15 @@ class Blob(QObject):
         size = min(base_size, max_texture_size)
         if size <= 0: return
         self.pixmap = QPixmap(size, size); self.pixmap.fill(Qt.transparent)
-        painter = QPainter(self.pixmap); painter.setRenderHint(QPainter.Antialiasing)
-        gradient = QRadialGradient(size/2, size/2, size/2); gradient.setColorAt(0, self._color); gradient.setColorAt(1, Qt.transparent)
-        painter.setBrush(QBrush(gradient)); painter.setPen(Qt.NoPen); painter.drawEllipse(0, 0, size, size); painter.end()
+        painter = QPainter()
+        if not painter.begin(self.pixmap):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            gradient = QRadialGradient(size/2, size/2, size/2); gradient.setColorAt(0, self._color); gradient.setColorAt(1, Qt.transparent)
+            painter.setBrush(QBrush(gradient)); painter.setPen(Qt.NoPen); painter.drawEllipse(0, 0, size, size)
+        finally:
+            painter.end()
     
     def get_opacity(self): return self._opacity
     def set_opacity(self, value): self._opacity = value
@@ -190,37 +196,43 @@ class ResponsiveAlbumArtLabel(QLabel):
     def paintEvent(self, event):
         pixmap = self.pixmap()
         if not pixmap or pixmap.isNull(): return
-        painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing); painter.setOpacity(self._opacity)
-        widget_rect = self.rect()
-        if self._aspect_ratio == 1.0:
-            size = min(widget_rect.width(), widget_rect.height()); x_offset = (widget_rect.width() - size) / 2; y_offset = (widget_rect.height() - size) / 2; draw_rect = QRectF(x_offset, y_offset, size, size)
-        else:
-            widget_aspect = widget_rect.width() / widget_rect.height() if widget_rect.height() > 0 else 1.0
-            if widget_aspect > self._aspect_ratio: h = widget_rect.height(); w = h * self._aspect_ratio; x = (widget_rect.width() - w) / 2; y = 0
-            else: w = widget_rect.width(); h = w / self._aspect_ratio; x = 0; y = (widget_rect.height() - h) / 2
-            draw_rect = QRectF(x, y, w, h)
-        painter.translate(draw_rect.center()); painter.scale(self._scale, self._scale); painter.translate(-draw_rect.center())
-        if self._border_color.alpha() > 0:
-            border_draw_rect = draw_rect.adjusted(self._border_width / 2, self._border_width / 2, -self._border_width / 2, -self._border_width / 2)
-            border_path = QPainterPath(); border_path.addRoundedRect(border_draw_rect, self._radius, self._radius)
-            pen = painter.pen(); pen.setColor(self._border_color); pen.setWidth(self._border_width); painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(border_path)
-        art_rect = draw_rect.adjusted(self._border_width, self._border_width, -self._border_width, -self._border_width)
-        path = QPainterPath(); path.addRoundedRect(art_rect, self._radius - self._border_width, self._radius - self._border_width); painter.setClipPath(path)
-        if self._cached_art_rect_size != art_rect.size() or self._cached_scaled_pixmap is None:
-            if art_rect.width() > 0 and art_rect.height() > 0:
-                self._cached_scaled_pixmap = pixmap.scaled(art_rect.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                self._cached_art_rect_size = art_rect.size()
-        if self._cached_scaled_pixmap:
-            scaled_width = self._cached_scaled_pixmap.width()
-            scaled_height = self._cached_scaled_pixmap.height()
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing); painter.setOpacity(self._opacity)
+            widget_rect = self.rect()
+            if self._aspect_ratio == 1.0:
+                size = min(widget_rect.width(), widget_rect.height()); x_offset = (widget_rect.width() - size) / 2; y_offset = (widget_rect.height() - size) / 2; draw_rect = QRectF(x_offset, y_offset, size, size)
+            else:
+                widget_aspect = widget_rect.width() / widget_rect.height() if widget_rect.height() > 0 else 1.0
+                if widget_aspect > self._aspect_ratio: h = widget_rect.height(); w = h * self._aspect_ratio; x = (widget_rect.width() - w) / 2; y = 0
+                else: w = widget_rect.width(); h = w / self._aspect_ratio; x = 0; y = (widget_rect.height() - h) / 2
+                draw_rect = QRectF(x, y, w, h)
+            painter.translate(draw_rect.center()); painter.scale(self._scale, self._scale); painter.translate(-draw_rect.center())
+            if self._border_color.alpha() > 0:
+                border_draw_rect = draw_rect.adjusted(self._border_width / 2, self._border_width / 2, -self._border_width / 2, -self._border_width / 2)
+                border_path = QPainterPath(); border_path.addRoundedRect(border_draw_rect, self._radius, self._radius)
+                pen = painter.pen(); pen.setColor(self._border_color); pen.setWidth(self._border_width); painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(border_path)
+            art_rect = draw_rect.adjusted(self._border_width, self._border_width, -self._border_width, -self._border_width)
+            path = QPainterPath(); path.addRoundedRect(art_rect, self._radius - self._border_width, self._radius - self._border_width); painter.setClipPath(path)
+            if self._cached_art_rect_size != art_rect.size() or self._cached_scaled_pixmap is None:
+                if art_rect.width() > 0 and art_rect.height() > 0:
+                    self._cached_scaled_pixmap = pixmap.scaled(art_rect.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                    self._cached_art_rect_size = art_rect.size()
+            if self._cached_scaled_pixmap:
+                scaled_width = self._cached_scaled_pixmap.width()
+                scaled_height = self._cached_scaled_pixmap.height()
 
-            px = art_rect.left() + (art_rect.width() - scaled_width) / 2
-            py = art_rect.top() + (art_rect.height() - self._cached_scaled_pixmap.height()) / 2
-            painter.drawPixmap(QPointF(px, py), self._cached_scaled_pixmap)
-        if self._loading_indicator_opacity > 0:
-            painter.setOpacity(self._loading_indicator_opacity); indicator_rect = QRectF(art_rect.right() - 40, art_rect.top() + 10, 30, 20)
-            indicator_bg_path = QPainterPath(); indicator_bg_path.addRoundedRect(indicator_rect, 5, 5); painter.fillPath(indicator_bg_path, QColor(0, 0, 0, 100))
-            painter.setPen(QColor(255, 255, 255, 200)); painter.setFont(QFont("Inter", 10, QFont.Bold)); painter.drawText(indicator_rect, Qt.AlignCenter, "HD")
+                px = art_rect.left() + (art_rect.width() - scaled_width) / 2
+                py = art_rect.top() + (art_rect.height() - self._cached_scaled_pixmap.height()) / 2
+                painter.drawPixmap(QPointF(px, py), self._cached_scaled_pixmap)
+            if self._loading_indicator_opacity > 0:
+                painter.setOpacity(self._loading_indicator_opacity); indicator_rect = QRectF(art_rect.right() - 40, art_rect.top() + 10, 30, 20)
+                indicator_bg_path = QPainterPath(); indicator_bg_path.addRoundedRect(indicator_rect, 5, 5); painter.fillPath(indicator_bg_path, QColor(0, 0, 0, 100))
+                painter.setPen(QColor(255, 255, 255, 200)); painter.setFont(QFont("Inter", 10, QFont.Bold)); painter.drawText(indicator_rect, Qt.AlignCenter, "HD")
+        finally:
+            painter.end()
 
 class ScrollingTextLabel(QLabel):
     def __init__(self, text="", parent=None):
@@ -257,23 +269,29 @@ class ScrollingTextLabel(QLabel):
     def paintEvent(self, event):
         if self._use_standard_painting: super().paintEvent(event); return
         if not self._full_text: return
-        painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing); painter.setOpacity(self._opacity)
-        metrics = QFontMetrics(self.font()); text_width = metrics.width(self._full_text)
-        if self._is_scrolling: x_pos = self._scroll_pos
-        else:
-            if self.alignment() & Qt.AlignLeft: x_pos = 0
-            elif self.alignment() & Qt.AlignRight: x_pos = self.width() - text_width
-            else: x_pos = (self.width() - text_width) // 2
-        x_pos += self._anim_offset_x; y_pos = (self.height() - metrics.height()) // 2 + metrics.ascent() + self._anim_offset_y
-        def draw_text_item(x, y):
-            if self._border_enabled:
-                path = QPainterPath(); path.addText(x, y, self.font(), self._full_text)
-                pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
-                painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
-                painter.setPen(Qt.NoPen); painter.setBrush(self._text_color); painter.drawPath(path)
-            else: painter.setPen(self._text_color); painter.drawText(int(x), int(y), self._full_text)
-        draw_text_item(x_pos, y_pos)
-        if self._is_scrolling: draw_text_item(int(x_pos + text_width + 60), int(y_pos))
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing); painter.setOpacity(self._opacity)
+            metrics = QFontMetrics(self.font()); text_width = metrics.width(self._full_text)
+            if self._is_scrolling: x_pos = self._scroll_pos
+            else:
+                if self.alignment() & Qt.AlignLeft: x_pos = 0
+                elif self.alignment() & Qt.AlignRight: x_pos = self.width() - text_width
+                else: x_pos = (self.width() - text_width) // 2
+            x_pos += self._anim_offset_x; y_pos = (self.height() - metrics.height()) // 2 + metrics.ascent() + self._anim_offset_y
+            def draw_text_item(x, y):
+                if self._border_enabled:
+                    path = QPainterPath(); path.addText(x, y, self.font(), self._full_text)
+                    pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
+                    painter.setPen(Qt.NoPen); painter.setBrush(self._text_color); painter.drawPath(path)
+                else: painter.setPen(self._text_color); painter.drawText(int(x), int(y), self._full_text)
+            draw_text_item(x_pos, y_pos)
+            if self._is_scrolling: draw_text_item(int(x_pos + text_width + 60), int(y_pos))
+        finally:
+            painter.end()
     def resizeEvent(self, event): super().resizeEvent(event); self.update_scroll()
     def update_scroll(self):
         if self._use_standard_painting: return
@@ -323,65 +341,70 @@ class SmoothProgressBar(QProgressBar):
 
     def paintEvent(self, event):
         if self.window().isMinimized(): return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
 
-        # Retrieve styles dynamically from the main window
-        border_enabled = getattr(self.window(), '_current_text_border_enabled', False)
-        # Use the specific text border size setting, defaulting to 3 if not set
-        border_width = getattr(self.window(), '_current_text_border_size', 3) if border_enabled else 0
-        border_color_list = getattr(self.window(), '_current_text_border_color', [0,0,0])
-        border_color = QColor(*border_color_list)
+            # Retrieve styles dynamically from the main window
+            border_enabled = getattr(self.window(), '_current_text_border_enabled', False)
+            # Use the specific text border size setting, defaulting to 3 if not set
+            border_width = getattr(self.window(), '_current_text_border_size', 3) if border_enabled else 0
+            border_color_list = getattr(self.window(), '_current_text_border_color', [0,0,0])
+            border_color = QColor(*border_color_list)
 
-        widget_rect = self.rect()
-        
-        # Define visual properties
-        fill_height = 6 # Slightly thicker to look distinct
-        total_height = fill_height + border_width
-        
-        # Calculate Y offset to align to bottom, accounting for border
-        y_offset = widget_rect.height() - total_height - 2 # 2px padding from bottom
-        
-        # QPen draws centered on the path, so we inset by half the border width 
-        # to ensure the stroke stays within our intended visual bounds.
-        inset = border_width / 2.0
-        draw_rect = QRectF(
-            inset, 
-            y_offset + inset, 
-            widget_rect.width() - border_width, 
-            fill_height
-        )
-
-        bg_color = QColor(self._bar_color)
-        bg_color.setAlpha(50)
-
-        # Draw Background Fill
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(bg_color))
-        painter.drawRoundedRect(draw_rect, 2, 2)
-
-        # Draw Progress Fill
-        if self.maximum() > 0:
-            ratio = self._current_val / self.maximum()
-            ratio = max(0.0, min(1.0, ratio))
+            widget_rect = self.rect()
             
-            progress_width = draw_rect.width() * ratio
+            # Define visual properties
+            fill_height = 6 # Slightly thicker to look distinct
+            total_height = fill_height + border_width
             
-            if progress_width > 0:
-                progress_rect = QRectF(draw_rect.x(), draw_rect.y(), progress_width, draw_rect.height())
-                painter.setBrush(QBrush(self._bar_color))
-                painter.drawRoundedRect(progress_rect, 2, 2)
+            # Calculate Y offset to align to bottom, accounting for border
+            y_offset = widget_rect.height() - total_height - 2 # 2px padding from bottom
+            
+            # QPen draws centered on the path, so we inset by half the border width 
+            # to ensure the stroke stays within our intended visual bounds.
+            inset = border_width / 2.0
+            draw_rect = QRectF(
+                inset, 
+                y_offset + inset, 
+                widget_rect.width() - border_width, 
+                fill_height
+            )
 
-        # Draw Border (Outline) on top
-        # This ensures the border crisply outlines the bar without the fill overlapping it
-        if border_width > 0:
-            pen = QPen(border_color)
-            pen.setWidth(border_width)
-            pen.setJoinStyle(Qt.RoundJoin) 
-            pen.setCapStyle(Qt.RoundCap)
-            painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
+            bg_color = QColor(self._bar_color)
+            bg_color.setAlpha(50)
+
+            # Draw Background Fill
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(bg_color))
             painter.drawRoundedRect(draw_rect, 2, 2)
+
+            # Draw Progress Fill
+            if self.maximum() > 0:
+                ratio = self._current_val / self.maximum()
+                ratio = max(0.0, min(1.0, ratio))
+                
+                progress_width = draw_rect.width() * ratio
+                
+                if progress_width > 0:
+                    progress_rect = QRectF(draw_rect.x(), draw_rect.y(), progress_width, draw_rect.height())
+                    painter.setBrush(QBrush(self._bar_color))
+                    painter.drawRoundedRect(progress_rect, 2, 2)
+
+            # Draw Border (Outline) on top
+            # This ensures the border crisply outlines the bar without the fill overlapping it
+            if border_width > 0:
+                pen = QPen(border_color)
+                pen.setWidth(border_width)
+                pen.setJoinStyle(Qt.RoundJoin) 
+                pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(draw_rect, 2, 2)
+        finally:
+            painter.end()
 
     def fade_in(self):
         if self.isVisible() and self.opacity_effect.opacity() == 1.0: return
@@ -410,17 +433,23 @@ class BorderedLabel(QLabel):
     def setCustomTextColor(self, color): self._custom_text_color = QColor(color); self.update()
     def paintEvent(self, event):
         if not self.text(): return
-        painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
-        rect = self.rect(); font = self.font(); metrics = QFontMetrics(font); text = self.text(); align = self.alignment()
-        x = 0
-        if align & Qt.AlignRight: x = rect.width() - metrics.width(text)
-        elif align & Qt.AlignHCenter: x = (rect.width() - metrics.width(text)) // 2
-        y = (rect.height() - metrics.height()) / 2 + metrics.ascent()
-        path = QPainterPath(); path.addText(x, y, font, text)
-        if self._border_enabled:
-            pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
-        painter.setPen(Qt.NoPen); painter.setBrush(self._custom_text_color if self._custom_text_color else self.palette().text().color()); painter.drawPath(path)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            rect = self.rect(); font = self.font(); metrics = QFontMetrics(font); text = self.text(); align = self.alignment()
+            x = 0
+            if align & Qt.AlignRight: x = rect.width() - metrics.width(text)
+            elif align & Qt.AlignHCenter: x = (rect.width() - metrics.width(text)) // 2
+            y = (rect.height() - metrics.height()) / 2 + metrics.ascent()
+            path = QPainterPath(); path.addText(x, y, font, text)
+            if self._border_enabled:
+                pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
+            painter.setPen(Qt.NoPen); painter.setBrush(self._custom_text_color if self._custom_text_color else self.palette().text().color()); painter.drawPath(path)
+        finally:
+            painter.end()
 
 class LabelBorderEventFilter(QObject):
     def __init__(self, border_enabled, border_color, border_width, text_color, parent=None):
@@ -489,14 +518,20 @@ class ColorPreviewLabel(QLabel):
         super().paintEvent(event)
         if self.text():
             font = self._custom_font if self._custom_font else self.font()
-            painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
-            rect = self.rect(); metrics = QFontMetrics(font); text = self.text()
-            x = (rect.width() - metrics.width(text)) / 2; y = (rect.height() - metrics.height()) / 2 + metrics.ascent()
-            path = QPainterPath(); path.addText(x, y, font, text)
-            if self._border_enabled:
-                pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
-                painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
-            painter.setPen(Qt.NoPen); painter.setBrush(self._custom_text_color if self._custom_text_color else self.palette().text().color()); painter.drawPath(path)
+            painter = QPainter()
+            if not painter.begin(self):
+                return
+            try:
+                painter.setRenderHint(QPainter.Antialiasing)
+                rect = self.rect(); metrics = QFontMetrics(font); text = self.text()
+                x = (rect.width() - metrics.width(text)) / 2; y = (rect.height() - metrics.height()) / 2 + metrics.ascent()
+                path = QPainterPath(); path.addText(x, y, font, text)
+                if self._border_enabled:
+                    pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
+                painter.setPen(Qt.NoPen); painter.setBrush(self._custom_text_color if self._custom_text_color else self.palette().text().color()); painter.drawPath(path)
+            finally:
+                painter.end()
 
 class NoScrollComboBox(QComboBox):
     def wheelEvent(self, event): event.ignore()

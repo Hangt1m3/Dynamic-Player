@@ -47,8 +47,14 @@ class ThemedDialog(QDialog):
     def apply_theme(self): self.setStyleSheet(get_common_stylesheet(self.bg_color, self.text_color, self.accent_color)); self.update()
     def paintEvent(self, event):
         if self.isMinimized(): return
-        painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing); path = QPainterPath(); path.addRoundedRect(QRectF(self.rect()), 12, 12)
-        painter.fillPath(path, self.bg_color); painter.setPen(QPen(self.accent_color, 1)); painter.drawPath(path)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing); path = QPainterPath(); path.addRoundedRect(QRectF(self.rect()), 12, 12)
+            painter.fillPath(path, self.bg_color); painter.setPen(QPen(self.accent_color, 1)); painter.drawPath(path)
+        finally:
+            painter.end()
     def mousePressEvent(self, event):
 
         if event.button() == Qt.LeftButton and event.y() < 50: self.drag_pos = event.globalPos() - self.frameGeometry().topLeft(); event.accept()
@@ -264,13 +270,18 @@ class FramelessFileDialog(QFileDialog):
                 self._install_filter_recursive(child)
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 12, 12)
-        painter.fillPath(path, self.bg_color)
-        painter.setPen(QPen(self.accent_color, 1))
-        painter.drawPath(path)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), 12, 12)
+            painter.fillPath(path, self.bg_color)
+            painter.setPen(QPen(self.accent_color, 1))
+            painter.drawPath(path)
+        finally:
+            painter.end()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1828,14 +1839,19 @@ class ColorEditorDialog(QDialog):
         return radios, widget
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 12, 12)
-        
-        preview_bg = QColor(self.ui_bg_color)
-        preview_bg.setAlpha(240) 
-        painter.fillPath(path, preview_bg)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), 12, 12)
+            
+            preview_bg = QColor(self.ui_bg_color)
+            preview_bg.setAlpha(240) 
+            painter.fillPath(path, preview_bg)
+        finally:
+            painter.end()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and event.y() < 220: 

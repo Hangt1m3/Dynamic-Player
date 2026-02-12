@@ -501,12 +501,9 @@ class PlaylistPanel(QWidget):
         # Playlist grid first
         self.layout.addWidget(self.playlist_scroll, 1)
         
-        # Minimal spacing to close gap
-        self.layout.addSpacing(2)
-        
         # Hover zone spacer - spans full width to trigger button expansion
         self.hover_zone = QWidget(self)
-        self.hover_zone.setFixedHeight(12)  # Small hover area to close gap
+        self.hover_zone.setFixedHeight(30)  # Adequate hover area
         self.hover_zone.setStyleSheet("background: transparent;")
         self.hover_zone.setCursor(Qt.PointingHandCursor)
         self.hover_zone.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -516,10 +513,6 @@ class PlaylistPanel(QWidget):
         # Add button with hover fade effect (using stylesheet opacity to avoid QPainter conflicts)
         self.add_btn = QPushButton("+ Add Playlist or Album", self)
         self._add_btn_hovered = False  # Start collapsed
-        self._collapse_timer = QTimer(self)
-        self._collapse_timer.setSingleShot(True)
-        self._collapse_timer.setInterval(100)  # 100ms delay before collapsing
-        self._collapse_timer.timeout.connect(self._check_and_collapse)
         self.add_btn.clicked.connect(self._on_add_clicked)
         self.add_btn.setCursor(Qt.PointingHandCursor)
         self.add_btn.setFocusPolicy(Qt.NoFocus)
@@ -670,23 +663,26 @@ class PlaylistPanel(QWidget):
             )
             self.add_btn.setFixedHeight(0)  # Collapse to zero height
     
-    def _check_and_collapse(self):
-        """Check if cursor is still over hover area before collapsing."""
-        if not self.hover_zone.underMouse() and not self.add_btn.underMouse():
-            self._add_btn_hovered = False
-            self._update_add_btn_style()
-    
     def eventFilter(self, obj, event):
         """Event filter to handle hover events for add button and hover zone."""
         if obj == self.add_btn or obj == self.hover_zone:
             if event.type() == event.Enter:
-                # Stop any pending collapse and show button
-                self._collapse_timer.stop()
+                # Show button on hover over either button or hover zone
                 self._add_btn_hovered = True
                 self._update_add_btn_style()
             elif event.type() == event.Leave:
-                # Delay collapse to prevent flickering
-                self._collapse_timer.start()
+                # Hide button when not hovering over either
+                # Check if cursor is still within the combined area
+                if obj == self.hover_zone:
+                    # If leaving hover zone, check if entering button
+                    if not self.add_btn.underMouse():
+                        self._add_btn_hovered = False
+                        self._update_add_btn_style()
+                elif obj == self.add_btn:
+                    # If leaving button, check if entering hover zone
+                    if not self.hover_zone.underMouse():
+                        self._add_btn_hovered = False
+                        self._update_add_btn_style()
         return super().eventFilter(obj, event)
 
 

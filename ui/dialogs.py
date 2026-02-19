@@ -590,6 +590,10 @@ class ColorEditorDialog(QDialog):
         self.initial_spotify_id = settings.value("spotify_client_id", "")
         self.initial_spotify_secret = settings.value("spotify_client_secret", "")
         self.initial_govee_key = settings.value("govee_api_key", "")
+        self.initial_apple_music_team_id = settings.value("apple_music_team_id", "")
+        self.initial_apple_music_key_id = settings.value("apple_music_key_id", "")
+        self.initial_apple_music_private_key = settings.value("apple_music_private_key", "")
+        self.initial_apple_music_user_token = settings.value("apple_music_user_token", "")
         self.initial_govee_devices = json.loads(settings.value("govee_devices", "[]"))
         
         self.initial_default_govee_brightness = int(main_window_state.default_govee_brightness * 100)
@@ -1052,6 +1056,14 @@ class ColorEditorDialog(QDialog):
         sound_layout.addWidget(self.sound_volume_label)
         global_visuals_layout.addRow(self._create_label("Sound Volume:"), sound_layout)
 
+        self.minimize_mode_checkbox = QCheckBox("Window button uses Notification-only mode")
+        self.minimize_mode_checkbox.setChecked(settings.value("minimize_to_notification_only", "true") == "true")
+        self.minimize_mode_checkbox.setToolTip(
+            "ON: the custom minimize button hides the player and enters notification-only mode.\n"
+            "OFF: the custom minimize button does a normal window minimize."
+        )
+        global_visuals_layout.addRow(self.minimize_mode_checkbox)
+
         # Data Management Group
         data_group = QGroupBox("Maintenance")
         data_layout = QVBoxLayout(data_group)
@@ -1101,6 +1113,33 @@ class ColorEditorDialog(QDialog):
         spotify_layout.addRow(self._create_label("Client ID:"), self.spotify_id_input)
         spotify_layout.addRow(self._create_label("Client Secret:"), self.spotify_secret_input)
         credentials_layout.addWidget(spotify_group)
+
+        apple_music_group = QGroupBox("Apple Music API")
+        apple_music_layout = QFormLayout(apple_music_group)
+        apple_music_layout.setSpacing(12)
+        self.apple_music_team_id_input = QLineEdit(self.initial_apple_music_team_id)
+        self.apple_music_key_id_input = QLineEdit(self.initial_apple_music_key_id)
+        self.apple_music_private_key_input = QLineEdit(self.initial_apple_music_private_key)
+        self.apple_music_user_token_input = QLineEdit(self.initial_apple_music_user_token)
+        self.apple_music_private_key_input.setEchoMode(QLineEdit.Password)
+
+        apple_music_help_label = self._create_dynamic_label("ⓘ Hover for Apple Music setup steps", is_html_or_wrapped=True)
+        apple_music_help_label.setToolTip(
+            "To get Apple Music credentials:\n"
+            "1) Open developer.apple.com/account\n"
+            "2) Create a MusicKit key\n"
+            "3) Copy Team ID and Key ID\n"
+            "4) Paste .p8 private key contents here\n"
+            "5) User token is optional for personalized features"
+        )
+        apple_music_group.setToolTip(apple_music_help_label.toolTip())
+
+        apple_music_layout.addRow(apple_music_help_label)
+        apple_music_layout.addRow(self._create_label("Team ID:"), self.apple_music_team_id_input)
+        apple_music_layout.addRow(self._create_label("Key ID:"), self.apple_music_key_id_input)
+        apple_music_layout.addRow(self._create_label("Private Key (.p8):"), self.apple_music_private_key_input)
+        apple_music_layout.addRow(self._create_label("User Token (Optional):"), self.apple_music_user_token_input)
+        credentials_layout.addWidget(apple_music_group)
 
         govee_cred_group = QGroupBox("Govee API & Devices")
         govee_cred_layout = QVBoxLayout(govee_cred_group)
@@ -3176,6 +3215,7 @@ class ColorEditorDialog(QDialog):
         
         # --- NEW: Sound Volume Check ---
         check("sound_volume", "Sound Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
+        check("minimize_to_notification_only", "Minimize Action", self.minimize_mode_checkbox.isChecked(), True, bool)
 
         # Global Visuals
         check("default_govee_brightness", "Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
@@ -3417,6 +3457,10 @@ class ColorEditorDialog(QDialog):
         new_spotify_id = self.spotify_id_input.text().strip()
         new_spotify_secret = self.spotify_secret_input.text().strip()
         new_govee_key = self.govee_key_input.text().strip()
+        new_apple_music_team_id = self.apple_music_team_id_input.text().strip()
+        new_apple_music_key_id = self.apple_music_key_id_input.text().strip()
+        new_apple_music_private_key = self.apple_music_private_key_input.text().strip()
+        new_apple_music_user_token = self.apple_music_user_token_input.text().strip()
 
         new_govee_devices = []
         for row in range(self.govee_device_table.rowCount()):
@@ -3433,6 +3477,10 @@ class ColorEditorDialog(QDialog):
         credentials_changed = (new_spotify_id != self.initial_spotify_id or 
                                new_spotify_secret != self.initial_spotify_secret or 
                                new_govee_key != self.initial_govee_key or 
+                               new_apple_music_team_id != self.initial_apple_music_team_id or
+                               new_apple_music_key_id != self.initial_apple_music_key_id or
+                               new_apple_music_private_key != self.initial_apple_music_private_key or
+                               new_apple_music_user_token != self.initial_apple_music_user_token or
                                new_govee_devices_json != initial_govee_devices_json)
 
         if credentials_changed:
@@ -3443,6 +3491,10 @@ class ColorEditorDialog(QDialog):
                 settings.setValue("spotify_client_id", new_spotify_id.strip())
                 settings.setValue("spotify_client_secret", new_spotify_secret.strip())
                 settings.setValue("govee_api_key", new_govee_key.strip())
+                settings.setValue("apple_music_team_id", new_apple_music_team_id)
+                settings.setValue("apple_music_key_id", new_apple_music_key_id)
+                settings.setValue("apple_music_private_key", new_apple_music_private_key)
+                settings.setValue("apple_music_user_token", new_apple_music_user_token)
                 settings.setValue("govee_devices", json.dumps(new_govee_devices))
                 
                 if os.path.exists(".cache"): os.remove(".cache")
@@ -3529,11 +3581,19 @@ class ColorEditorDialog(QDialog):
             self.spotify_id_input.setEchoMode(QLineEdit.Normal)
             self.spotify_secret_input.setEchoMode(QLineEdit.Normal)
             self.govee_key_input.setEchoMode(QLineEdit.Normal)
+            self.apple_music_team_id_input.setEchoMode(QLineEdit.Normal)
+            self.apple_music_key_id_input.setEchoMode(QLineEdit.Normal)
+            self.apple_music_private_key_input.setEchoMode(QLineEdit.Normal)
+            self.apple_music_user_token_input.setEchoMode(QLineEdit.Normal)
             button.setText("Hide Credentials")
         else:
             self.spotify_id_input.setEchoMode(QLineEdit.Password)
             self.spotify_secret_input.setEchoMode(QLineEdit.Password)
             self.govee_key_input.setEchoMode(QLineEdit.Password)
+            self.apple_music_team_id_input.setEchoMode(QLineEdit.Password)
+            self.apple_music_key_id_input.setEchoMode(QLineEdit.Password)
+            self.apple_music_private_key_input.setEchoMode(QLineEdit.Password)
+            self.apple_music_user_token_input.setEchoMode(QLineEdit.Password)
             button.setText("Show Credentials")
 
     def confirm_clear_cache(self):

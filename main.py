@@ -16,8 +16,8 @@ from PyQt5.QtCore import (
     QAbstractAnimation, QPoint, QRectF, QPropertyAnimation, QVariantAnimation
 )
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QBoxLayout, QVBoxLayout, 
-    QGraphicsDropShadowEffect, QSizePolicy, QSystemTrayIcon, QMenu, QDialog
+    QApplication, QMainWindow, QWidget, QBoxLayout, QVBoxLayout, QHBoxLayout,
+    QGraphicsDropShadowEffect, QSizePolicy, QSystemTrayIcon, QMenu, QDialog, QPushButton
 )
 from PyQt5.QtGui import (
     QColor, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPixmap
@@ -34,6 +34,15 @@ from ui.playlist_panel import PlaylistPanel
 from utils import get_best_text_color, get_best_border_color
 from ui.overlays import OverlayWidget, NotificationWidget
 from ui.dialogs import ColorEditorDialog, SpotifySetupDialog, AppleMusicSetupDialog, ThemedMessageBox
+
+
+class CircularWindowButton(QPushButton):
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setFixedSize(30, 30)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setProperty("no_text_border", True)
 
 class SpotifyPlayer(QMainWindow):
     artOpacity = pyqtProperty(float, fget=lambda self: self.art._opacity if hasattr(self, 'art') else 1.0, fset=lambda self, o: self.art.setOpacity(o) if hasattr(self, 'art') else None)
@@ -118,6 +127,7 @@ class SpotifyPlayer(QMainWindow):
         self.default_govee_brightness = 1.0
         self.lights_enabled = True
         self._last_sent_lights_config = None
+        self.minimize_to_notification_only = True
         
         self.settings_dialog = None
         self.NORMAL_POLL_INTERVAL = 1000
@@ -176,6 +186,7 @@ class SpotifyPlayer(QMainWindow):
             self._check_for_first_run()
 
         self._setup_ui()
+        self._setup_window_controls()
         self._load_saved_playlists()  # Load saved playlists before preloading new ones
         self._setup_animations()
         self._setup_tray_icon()
@@ -522,6 +533,7 @@ class SpotifyPlayer(QMainWindow):
         self._start_in_wallpaper = as_bool(settings.value("start_in_wallpaper_mode"), False)
         self.lights_enabled = as_bool(settings.value("lights_enabled"), True)
         self.govee_brightness_override = as_bool(settings.value("govee_brightness_override"), False)
+        self.minimize_to_notification_only = as_bool(settings.value("minimize_to_notification_only"), True)
 
         # Numbers
         self.default_govee_brightness = safe_cast(settings.value("default_govee_brightness"), float, 1.0)
@@ -679,6 +691,99 @@ class SpotifyPlayer(QMainWindow):
         
         self.update_art_shadow_properties()
         self.setTextAlpha(self._text_alpha)
+
+    def _setup_window_controls(self):
+        self.window_controls = QWidget(self)
+        controls_layout = QHBoxLayout(self.window_controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+
+        self.minimize_button = CircularWindowButton("−", self.window_controls)
+        self.fullscreen_button = CircularWindowButton("□", self.window_controls)
+        self.close_button = CircularWindowButton("×", self.window_controls)
+
+        self.minimize_button.setToolTip("Minimize / Notification-only mode")
+        self.fullscreen_button.setToolTip("Toggle fullscreen")
+        self.close_button.setToolTip("Close")
+
+        self.minimize_button.clicked.connect(self._on_minimize_requested)
+        self.fullscreen_button.clicked.connect(self._handle_fullscreen_hotkey)
+        self.close_button.clicked.connect(self.close)
+
+        self.minimize_button.setStyleSheet(
+            "QPushButton {"
+            " border: 1px solid rgba(255,255,255,100);"
+            " border-radius: 15px;"
+            " background-color: rgba(255,255,255,35);"
+            " color: rgba(255,255,255,0);"
+            " font-size: 16px;"
+            " font-weight: bold;"
+            "}"
+            "QPushButton:hover {"
+            " background-color: rgba(255,255,255,70);"
+            " color: rgba(255,255,255,255);"
+            "}"
+        )
+        self.fullscreen_button.setStyleSheet(
+            "QPushButton {"
+            " border: 1px solid rgba(255,255,255,100);"
+            " border-radius: 15px;"
+            " background-color: rgba(255,255,255,35);"
+            " color: rgba(255,255,255,0);"
+            " font-size: 14px;"
+            " font-weight: bold;"
+            "}"
+            "QPushButton:hover {"
+            " background-color: rgba(120,180,255,120);"
+            " color: rgba(255,255,255,255);"
+            "}"
+        )
+        self.close_button.setStyleSheet(
+            "QPushButton {"
+            " border: 1px solid rgba(255,255,255,100);"
+            " border-radius: 15px;"
+            " background-color: rgba(255,255,255,35);"
+            " color: rgba(255,255,255,0);"
+            " font-size: 18px;"
+            " font-weight: bold;"
+            "}"
+            "QPushButton:hover {"
+            " background-color: rgba(255,80,80,180);"
+            " color: rgba(255,255,255,255);"
+            "}"
+        )
+
+        controls_layout.addWidget(self.minimize_button)
+        controls_layout.addWidget(self.fullscreen_button)
+        controls_layout.addWidget(self.close_button)
+
+        self.window_controls.adjustSize()
+        self._position_window_controls()
+        self._update_window_controls_visibility()
+        self.window_controls.raise_()
+
+    def _position_window_controls(self):
+        if not hasattr(self, 'window_controls') or not self.window_controls:
+            return
+        margin = 12
+        self.window_controls.adjustSize()
+        x = max(margin, self.width() - self.window_controls.width() - margin)
+        self.window_controls.move(x, margin)
+
+    def _update_window_controls_visibility(self):
+        if not hasattr(self, 'window_controls') or not self.window_controls:
+            return
+        is_windowed = not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode or self.notification_only_mode)
+        self.window_controls.setVisible(is_windowed)
+        if is_windowed:
+            self.window_controls.raise_()
+
+    def _on_minimize_requested(self):
+        if self.minimize_to_notification_only and self.tray_icon:
+            if not self.notification_only_mode:
+                self.toggle_notification_only_mode()
+            return
+        self.showMinimized()
 
     def _load_saved_playlists(self):
         """Load saved playlists and albums from QSettings and display them."""
@@ -1956,6 +2061,7 @@ class SpotifyPlayer(QMainWindow):
         val = settings.value("default_govee_brightness")
         if val is not None:
             self.default_govee_brightness = float(val)
+        self.minimize_to_notification_only = str(settings.value("minimize_to_notification_only", "true")).lower() == "true"
         self._apply_and_refresh_ui() 
 
     def toggle_lights(self):
@@ -1993,6 +2099,7 @@ class SpotifyPlayer(QMainWindow):
             self.entry_anim.start()
             if self.tray_icon and not self.is_wallpaper_mode:
                 self.tray_icon.hide()
+            self._update_window_controls_visibility()
         else:
             # --- ENTERING MODE ---
             if not self.tray_icon: return # Cannot enter this mode without tray to restore
@@ -2020,6 +2127,7 @@ class SpotifyPlayer(QMainWindow):
                 self.tray_icon.showMessage("Notification Mode", 
                                            "Player hidden. Notifications forced ON.", 
                                            QSystemTrayIcon.Information, 2000)
+            self._update_window_controls_visibility()
 
     def _hide_for_notif_mode(self):
         if self.notification_only_mode:
@@ -2102,6 +2210,9 @@ class SpotifyPlayer(QMainWindow):
             self.overlay.resize(self.container.size())
             # Reposition overlay if it's visible
             self._reposition_overlay_if_visible()
+
+        self._position_window_controls()
+        self._update_window_controls_visibility()
 
         self._bg_crossfade_lerp = 1.0 
         self.update()
@@ -2448,6 +2559,8 @@ class SpotifyPlayer(QMainWindow):
         # Trigger playlist panel relayout after fullscreen toggle
         if hasattr(self, 'playlist_panel') and self.playlist_panel:
             QTimer.singleShot(50, self.playlist_panel.relayout)
+
+        self._update_window_controls_visibility()
         
         QTimer.singleShot(0, self._restore_overlay_visibility)
     
@@ -2530,6 +2643,8 @@ class SpotifyPlayer(QMainWindow):
         # Trigger playlist panel relayout after multi-monitor toggle
         if hasattr(self, 'playlist_panel') and self.playlist_panel:
             QTimer.singleShot(50, self.playlist_panel.relayout)
+
+        self._update_window_controls_visibility()
         
         QTimer.singleShot(0, self._restore_overlay_visibility)
             
@@ -2663,6 +2778,8 @@ class SpotifyPlayer(QMainWindow):
         # Trigger playlist panel relayout after wallpaper mode toggle
         if hasattr(self, 'playlist_panel') and self.playlist_panel:
             QTimer.singleShot(50, self.playlist_panel.relayout)
+
+        self._update_window_controls_visibility()
         
         QTimer.singleShot(0, self._restore_overlay_visibility)
 
@@ -2931,53 +3048,63 @@ class SpotifyPlayer(QMainWindow):
         self.resize_start_pos = None
         super().mouseReleaseEvent(event)
 
+    def _handle_fullscreen_hotkey(self):
+        """Run the exact fullscreen/windowed flow used by the F key handler."""
+        self._remember_overlay_visibility()
+        if self.is_wallpaper_mode:
+            return
+        if self.multi_monitor_mode:
+            self.multi_monitor_mode = False
+            self.is_fullscreen = True
+            self.setWindowFlags(Qt.FramelessWindowHint)
+            if self.target_monitor_geo:
+                self.setGeometry(self.target_monitor_geo)
+            self.show()
+            self.update_layout()
+            self._update_window_controls_visibility()
+            QTimer.singleShot(0, self._restore_overlay_visibility)
+        elif self.is_fullscreen:
+            self.is_fullscreen = False
+            # Windowed mode: use frameless to remove decorations, but keep our custom drag/resize
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowSystemMenuHint)
+            # Set a reasonable windowed size (80% of screen)
+            screen = QApplication.screenAt(self.geometry().center())
+            if not screen:
+                screens = QApplication.screens()
+                if screens:
+                    screen = screens[0]
+            if screen:
+                screen_geo = screen.availableGeometry()
+                new_width = int(screen_geo.width() * 0.8)
+                new_height = int(screen_geo.height() * 0.8)
+                new_x = screen_geo.x() + (screen_geo.width() - new_width) // 2
+                new_y = screen_geo.y() + (screen_geo.height() - new_height) // 2
+                self.setGeometry(new_x, new_y, new_width, new_height)
+            self.show()
+            self.update_layout()
+            self._update_window_controls_visibility()
+            QTimer.singleShot(0, self._restore_overlay_visibility)
+        else:
+            self.is_fullscreen = True
+            # Get the screen and set geometry to fill it completely
+            screen = QApplication.screenAt(self.geometry().center())
+            if not screen:
+                screens = QApplication.screens()
+                if screens:
+                    screen = screens[0]
+            if screen:
+                # Set window flags first, then geometry, then show fullscreen
+                self.setWindowFlags(Qt.FramelessWindowHint)
+                self.setGeometry(screen.geometry())
+            self.showFullScreen()
+            self.update_layout()
+            self._update_window_controls_visibility()
+            QTimer.singleShot(0, self._restore_overlay_visibility)
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape: self.close()
         elif event.key() == Qt.Key_F:
-            self._remember_overlay_visibility()
-            if self.is_wallpaper_mode:
-                return
-            if self.multi_monitor_mode:
-                self.multi_monitor_mode = False
-                self.is_fullscreen = True
-                self.setWindowFlags(Qt.FramelessWindowHint)
-                if self.target_monitor_geo: self.setGeometry(self.target_monitor_geo)
-                self.show()
-                self.update_layout()
-                QTimer.singleShot(0, self._restore_overlay_visibility)
-            elif self.is_fullscreen:
-                self.is_fullscreen = False
-                # Windowed mode: use frameless to remove decorations, but keep our custom drag/resize
-                self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowSystemMenuHint)
-                # Set a reasonable windowed size (80% of screen)
-                screen = QApplication.screenAt(self.geometry().center())
-                if not screen:
-                    screens = QApplication.screens()
-                    if screens: screen = screens[0]
-                if screen:
-                    screen_geo = screen.availableGeometry()
-                    new_width = int(screen_geo.width() * 0.8)
-                    new_height = int(screen_geo.height() * 0.8)
-                    new_x = screen_geo.x() + (screen_geo.width() - new_width) // 2
-                    new_y = screen_geo.y() + (screen_geo.height() - new_height) // 2
-                    self.setGeometry(new_x, new_y, new_width, new_height)
-                self.show()
-                self.update_layout()
-                QTimer.singleShot(0, self._restore_overlay_visibility)
-            else:
-                self.is_fullscreen = True
-                # Get the screen and set geometry to fill it completely
-                screen = QApplication.screenAt(self.geometry().center())
-                if not screen:
-                    screens = QApplication.screens()
-                    if screens: screen = screens[0]
-                if screen:
-                    # Set window flags first, then geometry, then show fullscreen
-                    self.setWindowFlags(Qt.FramelessWindowHint)
-                    self.setGeometry(screen.geometry())
-                self.showFullScreen()
-                self.update_layout()
-                QTimer.singleShot(0, self._restore_overlay_visibility)
+            self._handle_fullscreen_hotkey()
         elif event.key() == Qt.Key_F11:
             if self.is_wallpaper_mode:
                 return
@@ -3016,6 +3143,8 @@ class SpotifyPlayer(QMainWindow):
         self.entry_anim.setEndValue(1.0)
         self.entry_anim.setEasingCurve(QEasingCurve.OutQuad)
         self.entry_anim.start()
+        self._position_window_controls()
+        self._update_window_controls_visibility()
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()

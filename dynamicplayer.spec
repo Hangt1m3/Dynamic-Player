@@ -13,9 +13,12 @@
 # - Sound files (sounds/*.wav)
 # - Application icon
 # - Windows SDK for media control
+# - Apple Music API support (PyJWT, cryptography - optional)
 # - SSL certificates for HTTPS
 #
 # No external downloads or installations required by end-users!
+# Note: Apple Music API features are optional and gracefully disabled if
+#       PyJWT/cryptography aren't installed.
 #
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
@@ -27,6 +30,14 @@ winsdk_hidden_imports = collect_submodules('winsdk')
 sklearn_hidden_imports = collect_submodules('sklearn')
 spotipy_hidden_imports = collect_submodules('spotipy')
 scipy_hidden_imports = collect_submodules('scipy')
+
+# Apple Music API dependencies (optional)
+try:
+    jwt_hidden_imports = collect_submodules('jwt')
+    cryptography_hidden_imports = collect_submodules('cryptography')
+except:
+    jwt_hidden_imports = []
+    cryptography_hidden_imports = []
 
 # Explicit hidden imports for all dependencies
 other_hidden_imports = [
@@ -69,6 +80,15 @@ other_hidden_imports = [
     'winsdk.windows.media.control',
     'winsdk.windows.storage.streams',
     
+    # Apple Music API (optional - jwt/PyJWT and cryptography)
+    'jwt',
+    'cryptography',
+    'cryptography.hazmat',
+    'cryptography.hazmat.primitives',
+    'cryptography.hazmat.primitives.asymmetric',
+    'cryptography.hazmat.primitives.serialization',
+    'cryptography.hazmat.backends',
+    
     # Standard library that sometimes needs explicit inclusion
     'json',
     'base64',
@@ -76,11 +96,19 @@ other_hidden_imports = [
     'threading',
     'multiprocessing',
     'asyncio',
+    'datetime',
+    'hashlib',
 ]
 
 # Collect data files from packages that need them
 sklearn_datas = collect_data_files('sklearn', include_py_files=True)
 certifi_datas = collect_data_files('certifi')
+
+# Collect cryptography data files (optional)
+try:
+    cryptography_datas = collect_data_files('cryptography')
+except:
+    cryptography_datas = []
 
 block_cipher = None
 
@@ -91,8 +119,8 @@ a = Analysis(
     datas=[
         ('icon.ico', '.'),
         ('sounds', 'sounds'),
-    ] + sklearn_datas + certifi_datas,
-    hiddenimports=winsdk_hidden_imports + sklearn_hidden_imports + spotipy_hidden_imports + scipy_hidden_imports + other_hidden_imports,
+    ] + sklearn_datas + certifi_datas + cryptography_datas,
+    hiddenimports=winsdk_hidden_imports + sklearn_hidden_imports + spotipy_hidden_imports + scipy_hidden_imports + jwt_hidden_imports + cryptography_hidden_imports + other_hidden_imports,
 
 
     hookspath=[],

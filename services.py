@@ -270,3 +270,245 @@ class GlobalSoundFilter(QObject):
                 self.sm.play("hover", overlap=True)
         
         return super().eventFilter(obj, event)
+
+
+class AppleMusicClient:
+    """
+    Handles Apple Music API authentication and requests.
+    Generates JWT tokens from developer credentials and manages API calls.
+    """
+    def __init__(self, team_id=None, key_id=None, private_key=None):
+        self.team_id = team_id
+        self.key_id = key_id
+        self.private_key = private_key
+        self.base_url = "https://api.music.apple.com/v1"
+        self.developer_token = None
+        self.user_token = None
+        self.storefront = "us"  # Default, will be updated dynamically
+        
+        if self.team_id and self.key_id and self.private_key:
+            self._generate_developer_token()
+    
+    def _generate_developer_token(self):
+        """Generate JWT developer token from credentials."""
+        try:
+            import jwt  # type: ignore[import]
+            import datetime
+            
+            # Token valid for 6 months
+            expiration_time = datetime.datetime.utcnow() + datetime.timedelta(days=180)
+            
+            headers = {
+                "alg": "ES256",
+                "kid": self.key_id
+            }
+            
+            payload = {
+                "iss": self.team_id,
+                "iat": int(datetime.datetime.utcnow().timestamp()),
+                "exp": int(expiration_time.timestamp())
+            }
+            
+            self.developer_token = jwt.encode(
+                payload,
+                self.private_key,
+                algorithm="ES256",
+                headers=headers
+            )
+            
+            # Handle both string and bytes return from jwt.encode
+            if isinstance(self.developer_token, bytes):
+                self.developer_token = self.developer_token.decode('utf-8')
+                
+            return True
+        except ImportError:
+            print("PyJWT library not installed. Install with: pip install pyjwt cryptography")
+            return False
+        except Exception as e:
+            print(f"Error generating Apple Music developer token: {e}")
+            return False
+    
+    def set_user_token(self, user_token):
+        """Set the user's music token for personalized requests."""
+        self.user_token = user_token
+    
+    def _get_headers(self, include_user_token=False):
+        """Get request headers with authentication."""
+        headers = {
+            "Authorization": f"Bearer {self.developer_token}",
+            "Content-Type": "application/json"
+        }
+        
+        if include_user_token and self.user_token:
+            headers["Music-User-Token"] = self.user_token
+        
+        return headers
+    
+    def get_current_playback(self):
+        """
+        Get currently playing track information.
+        Note: Apple Music API doesn't have a direct 'current playback' endpoint like Spotify.
+        This requires MusicKit JS integration or recent play history.
+        Returns None if not available through API.
+        """
+        # Apple Music API limitation: No direct playback state endpoint
+        # Would need MusicKit JS or system integration for real-time playback
+        return None
+    
+    def search(self, query, types=None, limit=25):
+        """Search Apple Music catalog."""
+        if not self.developer_token:
+            return None
+        
+        types_str = types or "songs,albums,playlists"
+        params = {
+            "term": query,
+            "types": types_str,
+            "limit": limit
+        }
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/catalog/{self.storefront}/search",
+                headers=self._get_headers(),
+                params=params,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Apple Music search error: {e}")
+            return None
+    
+    def get_song(self, song_id):
+        """Get song details by ID."""
+        if not self.developer_token:
+            return None
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/catalog/{self.storefront}/songs/{song_id}",
+                headers=self._get_headers(),
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Apple Music get song error: {e}")
+            return None
+    
+    def get_album(self, album_id):
+        """Get album details by ID."""
+        if not self.developer_token:
+            return None
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/catalog/{self.storefront}/albums/{album_id}",
+                headers=self._get_headers(),
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Apple Music get album error: {e}")
+            return None
+    
+    def get_user_playlists(self, limit=25):
+        """Get user's library playlists (requires user token)."""
+        if not self.developer_token or not self.user_token:
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/me/library/playlists",
+                headers=self._get_headers(include_user_token=True),
+                params={"limit": limit},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", [])
+        except Exception as e:
+            print(f"Apple Music get playlists error: {e}")
+            return []
+    
+    def get_user_albums(self, limit=25):
+        """Get user's library albums (requires user token)."""
+        if not self.developer_token or not self.user_token:
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/me/library/albums",
+                headers=self._get_headers(include_user_token=True),
+                params={"limit": limit},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", [])
+        except Exception as e:
+            print(f"Apple Music get albums error: {e}")
+            return []
+    
+    def get_playlist_tracks(self, playlist_id, limit=100):
+        """Get tracks from a playlist."""
+        if not self.developer_token:
+            return []
+        
+        try:
+            # Check if it's a library playlist or catalog playlist
+            if playlist_id.startswith("p."):
+                # Library playlist (requires user token)
+                url = f"{self.base_url}/me/library/playlists/{playlist_id}/tracks"
+                headers = self._get_headers(include_user_token=True)
+            else:
+                # Catalog playlist
+                url = f"{self.base_url}/catalog/{self.storefront}/playlists/{playlist_id}/tracks"
+                headers = self._get_headers()
+            
+            response = requests.get(url, headers=headers, params={"limit": limit}, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", [])
+        except Exception as e:
+            print(f"Apple Music get playlist tracks error: {e}")
+            return []
+    
+    def get_album_tracks(self, album_id):
+        """Get tracks from an album."""
+        if not self.developer_token:
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/catalog/{self.storefront}/albums/{album_id}/tracks",
+                headers=self._get_headers(),
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", [])
+        except Exception as e:
+            print(f"Apple Music get album tracks error: {e}")
+            return []
+    
+    def get_recently_played(self, limit=10):
+        """Get recently played tracks (requires user token)."""
+        if not self.developer_token or not self.user_token:
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/me/recent/played/tracks",
+                headers=self._get_headers(include_user_token=True),
+                params={"limit": limit},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", [])
+        except Exception as e:
+            print(f"Apple Music get recently played error: {e}")
+            return []

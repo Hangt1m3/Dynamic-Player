@@ -189,6 +189,113 @@ class SpotifySetupDialog(ThemedDialog):
         """Skip Spotify setup and continue without it."""
         self.done(self.SKIP_CODE)
 
+
+class AppleMusicSetupDialog(ThemedDialog):
+    SKIP_CODE = 2  # Custom code for skip action
+    
+    def __init__(self, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
+        super().__init__(parent, "Apple Music API Setup (Optional)", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Info text
+        info_label = QLabel(
+            "<b>Set Up Apple Music (Optional):</b><br><br>"
+            "To use Apple Music with enhanced features, you'll need MusicKit API credentials.<br>"
+            "Apple Music playback detection will work via Windows Media Player without these credentials, "
+            "but album art and metadata will be limited.<br><br>"
+            "<b>To get credentials:</b><br>"
+            "1. Go to <a href='https://developer.apple.com/account'>developer.apple.com/account</a><br>"
+            "2. Create a MusicKit Key (under Certificates, IDs & Profiles)<br>"
+            "3. Download the .p8 private key file<br>"
+            "4. Find your Team ID and Key ID in the Apple Developer portal<br><br>"
+            "If you don't have these yet, skip this step and use basic media player integration."
+        )
+        info_label.setWordWrap(True)
+        info_label.setOpenExternalLinks(True)
+        layout.addWidget(info_label)
+        
+        # Input fields
+        team_id_label = QLabel("Team ID:")
+        key_id_label = QLabel("Key ID:")
+        private_key_label = QLabel("Private Key (.p8 contents):")
+        
+        self.team_id_input = QLineEdit()
+        self.key_id_input = QLineEdit()
+        self.private_key_input = QLineEdit()
+        self.private_key_input.setEchoMode(QLineEdit.Password)
+        
+        # Load P8 file button
+        load_p8_btn = QPushButton("Load from .p8 file...")
+        load_p8_btn.clicked.connect(self._load_p8_file)
+        
+        # User token (optional)
+        user_token_label = QLabel("User Token (Optional):")
+        self.user_token_input = QLineEdit()
+        self.user_token_input.setPlaceholderText("For personalized features like playlists")
+        
+        # Load existing credentials
+        settings = QSettings("SpotifySync", "App")
+        self.team_id_input.setText(settings.value("apple_music_team_id", ""))
+        self.key_id_input.setText(settings.value("apple_music_key_id", ""))
+        self.private_key_input.setText(settings.value("apple_music_private_key", ""))
+        self.user_token_input.setText(settings.value("apple_music_user_token", ""))
+        
+        form_layout = QFormLayout()
+        form_layout.addRow(team_id_label, self.team_id_input)
+        form_layout.addRow(key_id_label, self.key_id_input)
+        form_layout.addRow(private_key_label, self.private_key_input)
+        form_layout.addRow("", load_p8_btn)
+        form_layout.addRow(user_token_label, self.user_token_input)
+        layout.addLayout(form_layout)
+        
+        # Button layout
+        btn_layout = QHBoxLayout()
+        skip_btn = QPushButton("Skip & Use Basic Integration")
+        skip_btn.clicked.connect(self.skip)
+        skip_btn.setMinimumWidth(180)
+        save_btn = QPushButton("Save Credentials")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(skip_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(save_btn)
+        layout.addLayout(btn_layout)
+        self.content_layout.addLayout(layout)
+    
+    def _load_p8_file(self):
+        """Load private key from .p8 file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Apple Music Private Key",
+            "",
+            "P8 Files (*.p8);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'r') as f:
+                    key_content = f.read().strip()
+                    self.private_key_input.setText(key_content)
+            except Exception as e:
+                print(f"Error loading .p8 file: {e}")
+    
+    def accept(self):
+        settings = QSettings("SpotifySync", "App")
+        settings.setValue("apple_music_team_id", self.team_id_input.text().strip())
+        settings.setValue("apple_music_key_id", self.key_id_input.text().strip())
+        settings.setValue("apple_music_private_key", self.private_key_input.text().strip())
+        settings.setValue("apple_music_user_token", self.user_token_input.text().strip())
+        super().accept()
+    
+    def skip(self):
+        """Skip Apple Music API setup and continue without it."""
+        self.done(self.SKIP_CODE)
+
+
 # Important: FramelessColorDialog and FramelessFileDialog need to inherit similar painting logic as ThemedDialog.
 # Copy them from the original code exactly.
 

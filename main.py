@@ -4,7 +4,7 @@ import os
 import json
 import io
 import multiprocessing
-from services import ColorCache, GoveeController, SoundManager, GlobalSoundFilter
+from services import ColorCache, GoveeController, SoundManager, GlobalSoundFilter, AppleMusicClient
 from PIL import Image
 from requests import get
 
@@ -25,15 +25,15 @@ from PyQt5.QtGui import (
 
 from spotipy import Spotify, SpotifyOAuth
 
-from config import SPOTIPY_REDIRECT_URI, SPOTIFY_SCOPE, SPOTIFY_GREEN
+from config import SPOTIPY_REDIRECT_URI, SPOTIFY_SCOPE, SPOTIFY_GREEN, APPLE_MUSIC_RED
 from utils import resource_path
 from services import ColorCache, GoveeController
-from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, IS_WINDOWS
+from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, IS_WINDOWS
 from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel
 from ui.playlist_panel import PlaylistPanel
 from utils import get_best_text_color, get_best_border_color
 from ui.overlays import OverlayWidget, NotificationWidget
-from ui.dialogs import ColorEditorDialog, SpotifySetupDialog, ThemedMessageBox
+from ui.dialogs import ColorEditorDialog, SpotifySetupDialog, AppleMusicSetupDialog, ThemedMessageBox
 
 class SpotifyPlayer(QMainWindow):
     artOpacity = pyqtProperty(float, fget=lambda self: self.art._opacity if hasattr(self, 'art') else 1.0, fset=lambda self, o: self.art.setOpacity(o) if hasattr(self, 'art') else None)
@@ -64,8 +64,9 @@ class SpotifyPlayer(QMainWindow):
         self.font_styles_cache = {}
         self.base_font_families = []
         self._fonts_loaded = False
-        self.active_media_source = None # 'spotify' or 'windows'
+        self.active_media_source = None # 'spotify', 'apple_music', or 'windows'
         self.spotify_worker = None
+        self.apple_music_worker = None
         self.windows_worker = None
         self._current_track_id = None
         self.load_token = 0
@@ -161,7 +162,11 @@ class SpotifyPlayer(QMainWindow):
             # Fallback if icon is missing or invalid
             self._idle_pil_img = Image.new("RGB", (256, 256), "black")
 
-        did_show_setup = self._setup_spotify()
+        # Setup music services - order matters for priority
+        did_show_spotify_setup = self._setup_spotify()
+        did_show_apple_music_setup = self._setup_apple_music()
+        did_show_setup = did_show_spotify_setup or did_show_apple_music_setup
+        
         self._load_govee_settings() 
         self.color_cache = ColorCache()
         self._govee = GoveeController(self.govee_api_key, self.govee_devices)
@@ -281,10 +286,35 @@ class SpotifyPlayer(QMainWindow):
         except (json.JSONDecodeError, TypeError, ValueError):
             self.govee_devices = []
 
+    def _validate_spotify_credentials(self, client_id, client_secret):
+        """Validate Spotify credentials format and content."""
+        # Convert to string and strip whitespace
+        client_id = str(client_id).strip() if client_id else ""
+        client_secret = str(client_secret).strip() if client_secret else ""
+        
+        # Check for minimum length and invalid patterns (e.g., placeholder text)
+        if not client_id or not client_secret:
+            return False, "Credentials are empty"
+        
+        # Check for common invalid patterns (too short, contains spaces that shouldn't be there, etc)
+        if len(client_id) < 20 or len(client_secret) < 20:
+            return False, "Credentials appear malformed (too short)"
+        
+        # Check if they look like they might contain QSettings artifacts or corruption
+        if any(bad in str(client_id).lower() or bad in str(client_secret).lower() 
+               for bad in ["@invalid", "@@", "qvariant", "null", "undefined", "none"]):
+            return False, "Credentials appear corrupted"
+        
+        return True, None
+
     def _setup_spotify(self):
         settings = QSettings("SpotifySync", "App")
         did_show_setup_dialog = False
         self.sp = None  # Initialize to None; will be set if credentials provided
+        
+        # Check if user previously chose to skip Spotify setup
+        if settings.value("spotify_setup_skipped", "false") == "true":
+            return False
         
         while True:
             # Check if we should force Spotify setup (e.g., after reset with keep_data)
@@ -293,6 +323,17 @@ class SpotifyPlayer(QMainWindow):
             
             client_id = settings.value("spotify_client_id")
             client_secret = settings.value("spotify_client_secret")
+            
+            # Validate credential format - catch corrupted/incomplete saved credentials
+            is_valid, validation_error = self._validate_spotify_credentials(client_id, client_secret)
+            if not is_valid:
+                print(f"Spotify credentials validation failed: {validation_error}. Clearing corrupted credentials.")
+                settings.remove("spotify_client_id")
+                settings.remove("spotify_client_secret")
+                settings.sync()
+                client_id = None
+                client_secret = None
+                force_setup = True  # Force setup dialog to show
 
             if (not client_id or not client_secret) or force_setup:
                 did_show_setup_dialog = True
@@ -303,7 +344,9 @@ class SpotifyPlayer(QMainWindow):
                 dialog = SpotifySetupDialog()
                 result = dialog.exec_()
                 if result == SpotifySetupDialog.SKIP_CODE:
-                    # User chose to skip Spotify setup
+                    # User chose to skip Spotify setup - remember this decision
+                    settings.setValue("spotify_setup_skipped", "true")
+                    settings.sync()
                     self.sp = None
                     break
                 elif result != QDialog.Accepted:
@@ -321,12 +364,28 @@ class SpotifyPlayer(QMainWindow):
                 )
                 self.sp = Spotify(auth_manager=auth_manager)
                 # A simple call to check if auth works. This will trigger browser auth if no token.
-                self.sp.me() 
+                self.sp.me()
+                # Clear skip flag since user successfully configured Spotify
+                settings.remove("spotify_setup_skipped")
+                settings.sync()
                 break # Success, exit loop
             except Exception as e:
                 print(f"Failed to initialize Spotify. Please check credentials. Error: {e}")
                 
-                # Show an error message to the user but don't auto-clear credentials (could be network issue)
+                # Determine if this is likely a credential corruption issue vs a transient network issue
+                error_str = str(e).lower()
+                is_likely_corruption = any(keyword in error_str for keyword in 
+                    ["invalid_client", "unauthorized", "invalid_grant", "malformed", "400"])
+                
+                # Auto-recover from credential corruption by clearing credentials and retrying
+                if is_likely_corruption:
+                    print("Detected credential corruption. Clearing credentials and retrying...")
+                    settings.remove("spotify_client_id")
+                    settings.remove("spotify_client_secret")
+                    settings.sync()
+                    continue  # Loop will show setup dialog again with fresh credentials
+                
+                # For network issues, ask user what to do
                 msg = ThemedMessageBox("Spotify Authentication Error",
                     f"Spotify authentication failed.\n\nError: {e}\n\n"
                     "Do you want to reset your saved Client ID and Secret?\n"
@@ -337,9 +396,99 @@ class SpotifyPlayer(QMainWindow):
                 if res == QDialog.Accepted:
                     settings.remove("spotify_client_id")
                     settings.remove("spotify_client_secret")
+                    settings.sync()
+                    continue  # Loop again to show setup dialog
                 elif res == 2:
-                    # User chose to skip Spotify
+                    # User chose to skip Spotify - remember this decision
+                    settings.setValue("spotify_setup_skipped", "true")
+                    settings.sync()
                     self.sp = None
+                    break
+                # If "No", loop continues and retries with same credentials
+        return did_show_setup_dialog
+
+    def _setup_apple_music(self):
+        """Setup Apple Music API client with developer credentials."""
+        settings = QSettings("SpotifySync", "App")
+        did_show_setup_dialog = False
+        self.apple_music_client = None  # Initialize to None
+        
+        # Check if user previously chose to skip Apple Music setup
+        if settings.value("apple_music_setup_skipped", "false") == "true":
+            return False
+        
+        while True:
+            # Check if we should force Apple Music setup
+            force_setup = settings.value("force_apple_music_setup", "false") == "true"
+            
+            team_id = settings.value("apple_music_team_id")
+            key_id = settings.value("apple_music_key_id")
+            private_key = settings.value("apple_music_private_key")
+            
+            if (not team_id or not key_id or not private_key) or force_setup:
+                did_show_setup_dialog = True
+                # Clear the force flag
+                settings.remove("force_apple_music_setup")
+                settings.sync()
+                
+                dialog = AppleMusicSetupDialog()
+                result = dialog.exec_()
+                if result == AppleMusicSetupDialog.SKIP_CODE:
+                    # User chose to skip Apple Music setup - remember this decision
+                    settings.setValue("apple_music_setup_skipped", "true")
+                    settings.sync()
+                    self.apple_music_client = None
+                    break
+                elif result != QDialog.Accepted:
+                    # User cancelled - continue with basic integration
+                    self.apple_music_client = None
+                    break
+                continue  # Loop again to load the new settings
+            
+            try:
+                # Create Apple Music client
+                self.apple_music_client = AppleMusicClient(
+                    team_id=team_id,
+                    key_id=key_id,
+                    private_key=private_key
+                )
+                
+                # Set user token if available
+                user_token = settings.value("apple_music_user_token")
+                if user_token:
+                    self.apple_music_client.set_user_token(user_token)
+                
+                # Test if token generation works
+                if not self.apple_music_client.developer_token:
+                    raise Exception("Failed to generate developer token. Check credentials and ensure PyJWT is installed.")
+                
+                # Clear skip flag since user successfully configured Apple Music
+                settings.remove("apple_music_setup_skipped")
+                settings.sync()
+                print("Apple Music API initialized successfully")
+                break  # Success, exit loop
+            except Exception as e:
+                print(f"Failed to initialize Apple Music API: {e}")
+                
+                msg = ThemedMessageBox("Apple Music API Error",
+                    f"Apple Music API initialization failed.\n\nError: {e}\n\n"
+                    "Do you want to reset your saved credentials?\n"
+                    "(Yes to reset and retry, No to retry with current details, Skip to use basic integration)",
+                    [("Yes", QDialog.Accepted), ("No", QDialog.Rejected), ("Skip", 2)], 
+                    self, self._current_bg_color, QColor(*self._current_text_color), QColor(100, 100, 100), 
+                    self._current_text_border_enabled, QColor(*self._current_text_border_color), self._current_text_border_size)
+                
+                res = msg.exec_()
+                if res == QDialog.Accepted:
+                    settings.remove("apple_music_team_id")
+                    settings.remove("apple_music_key_id")
+                    settings.remove("apple_music_private_key")
+                    settings.remove("apple_music_user_token")
+                elif res == 2:
+                    # User chose to skip Apple Music API - remember this decision
+                    settings.setValue("apple_music_setup_skipped", "true")
+                    settings.sync()
+                    self.apple_music_client = None
                     break
         return did_show_setup_dialog
 
@@ -563,73 +712,134 @@ class SpotifyPlayer(QMainWindow):
             self.playlists = []
 
     def _get_user_playlists(self):
-        """Fetch the user's own Spotify playlists (public and private) on-demand, with caching."""
-        # Return cached playlists if already fetched
-        if self._user_playlists:
+        """Fetch user playlists from all configured services (Spotify + Apple Music)."""
+        all_playlists = []
+        
+        # Fetch from Spotify
+        if self._user_playlists and not any(p.get('source') == 'apple_music' for p in self._user_playlists):
+            # Only return cached if it doesn't contain Apple Music items
             return self._user_playlists
         
         try:
-            sp = self._get_spotify_client()
-            playlists = []
-            limit = 50
-            offset = 0
-            while True:
-                resp = sp.current_user_playlists(limit=limit, offset=offset)
-                for pl in resp.get('items', []):
-                    # Include images if available, but don't encode cover art
-                    playlist_data = {
-                        'name': pl['name'],
-                        'id': pl['id'],
-                        'uri': pl.get('uri') or f"spotify:playlist:{pl['id']}",
-                        'images': pl.get('images', []),
-                        'item_type': 'playlist'
-                    }
-                    playlists.append(playlist_data)
-                if resp.get('next'):
-                    offset += limit
-                else:
-                    break
-            self._user_playlists = playlists
-            print(f"Fetched {len(playlists)} user playlists from Spotify")
-            return playlists
+            if self.sp:
+                sp = self._get_spotify_client()
+                playlists = []
+                limit = 50
+                offset = 0
+                while True:
+                    resp = sp.current_user_playlists(limit=limit, offset=offset)
+                    for pl in resp.get('items', []):
+                        playlist_data = {
+                            'name': pl['name'],
+                            'id': pl['id'],
+                            'uri': pl.get('uri') or f"spotify:playlist:{pl['id']}",
+                            'images': pl.get('images', []),
+                            'item_type': 'playlist',
+                            'source': 'spotify'
+                        }
+                        playlists.append(playlist_data)
+                    if resp.get('next'):
+                        offset += limit
+                    else:
+                        break
+                all_playlists.extend(playlists)
+                print(f"Fetched {len(playlists)} Spotify playlists")
         except Exception as e:
-            print(f"Error fetching user playlists: {e}")
-            return []
+            print(f"Error fetching Spotify playlists: {e}")
+        
+        # Fetch from Apple Music
+        try:
+            if self.apple_music_client and self.apple_music_client.developer_token:
+                am_playlists = self.apple_music_client.get_user_playlists(limit=100)
+                for pl in am_playlists:
+                    attrs = pl.get('attributes', {})
+                    artwork = attrs.get('artwork', {})
+                    images = []
+                    if artwork and artwork.get('url'):
+                        # Apple Music uses template URLs
+                        art_url = artwork['url'].replace('{w}', '300').replace('{h}', '300')
+                        images = [{'url': art_url, 'width': 300, 'height': 300}]
+                    
+                    playlist_data = {
+                        'name': attrs.get('name', 'Unknown Playlist'),
+                        'id': pl.get('id', ''),
+                        'uri': f"applemusic:playlist:{pl.get('id', '')}",
+                        'images': images,
+                        'item_type': 'playlist',
+                        'source': 'apple_music'
+                    }
+                    all_playlists.append(playlist_data)
+                print(f"Fetched {len(am_playlists)} Apple Music playlists")
+        except Exception as e:
+            print(f"Error fetching Apple Music playlists: {e}")
+        
+        self._user_playlists = all_playlists
+        return all_playlists
 
     def _get_user_albums(self):
-        """Fetch the user's saved albums from Spotify on-demand, with caching."""
-        # Return cached albums if already fetched
-        if self._user_albums:
+        """Fetch user albums from all configured services (Spotify + Apple Music)."""
+        all_albums = []
+        
+        # Fetch from Spotify
+        if self._user_albums and not any(a.get('source') == 'apple_music' for a in self._user_albums):
+            # Only return cached if it doesn't contain Apple Music items
             return self._user_albums
         
         try:
-            sp = self._get_spotify_client()
-            albums = []
-            limit = 50
-            offset = 0
-            while True:
-                resp = sp.current_user_saved_albums(limit=limit, offset=offset)
-                for item in resp.get('items', []):
-                    album = item.get('album', {})
-                    # Include images if available, but don't encode cover art
-                    album_data = {
-                        'name': album['name'],
-                        'id': album['id'],
-                        'uri': album.get('uri') or f"spotify:album:{album['id']}",
-                        'images': album.get('images', []),
-                        'item_type': 'album'
-                    }
-                    albums.append(album_data)
-                if resp.get('next'):
-                    offset += limit
-                else:
-                    break
-            self._user_albums = albums
-            print(f"Fetched {len(albums)} user albums from Spotify")
-            return albums
+            if self.sp:
+                sp = self._get_spotify_client()
+                albums = []
+                limit = 50
+                offset = 0
+                while True:
+                    resp = sp.current_user_saved_albums(limit=limit, offset=offset)
+                    for item in resp.get('items', []):
+                        album = item.get('album', {})
+                        album_data = {
+                            'name': album['name'],
+                            'id': album['id'],
+                            'uri': album.get('uri') or f"spotify:album:{album['id']}",
+                            'images': album.get('images', []),
+                            'item_type': 'album',
+                            'source': 'spotify'
+                        }
+                        albums.append(album_data)
+                    if resp.get('next'):
+                        offset += limit
+                    else:
+                        break
+                all_albums.extend(albums)
+                print(f"Fetched {len(albums)} Spotify albums")
         except Exception as e:
-            print(f"Error fetching user albums: {e}")
-            return []
+            print(f"Error fetching Spotify albums: {e}")
+        
+        # Fetch from Apple Music
+        try:
+            if self.apple_music_client and self.apple_music_client.developer_token:
+                am_albums = self.apple_music_client.get_user_albums(limit=100)
+                for alb in am_albums:
+                    attrs = alb.get('attributes', {})
+                    artwork = attrs.get('artwork', {})
+                    images = []
+                    if artwork and artwork.get('url'):
+                        art_url = artwork['url'].replace('{w}', '300').replace('{h}', '300')
+                        images = [{'url': art_url, 'width': 300, 'height': 300}]
+                    
+                    album_data = {
+                        'name': attrs.get('name', 'Unknown Album'),
+                        'id': alb.get('id', ''),
+                        'uri': f"applemusic:album:{alb.get('id', '')}",
+                        'images': images,
+                        'item_type': 'album',
+                        'source': 'apple_music'
+                    }
+                    all_albums.append(album_data)
+                print(f"Fetched {len(am_albums)} Apple Music albums")
+        except Exception as e:
+            print(f"Error fetching Apple Music albums: {e}")
+        
+        self._user_albums = all_albums
+        return all_albums
 
     def _get_spotify_client(self):
         # Helper to get a valid spotipy.Spotify client (with token refresh if needed)
@@ -686,6 +896,9 @@ class SpotifyPlayer(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Trigger playlist panel relayout when window is resized
+        if hasattr(self, 'playlist_panel') and self.playlist_panel:
+            self.playlist_panel.relayout()
 
     def _on_add_playlist_requested(self):
         # No longer used, handled in PlaylistPanel
@@ -998,13 +1211,22 @@ class SpotifyPlayer(QMainWindow):
         # The icon is shown/hidden in toggle_wallpaper_mode
 
     def _setup_timers(self):
-        self.spotify_worker = SpotifyPollingWorker(self.sp)
-        self.spotify_worker.signals.track_changed.connect(self._on_spotify_track_changed)
-        self.spotify_worker.signals.playback_state_changed.connect(self._on_playback_state_changed)
-        self.spotify_worker.signals.no_playback.connect(self._on_spotify_no_playback)
-        self.threadpool.start(self.spotify_worker)
-
+        # Start Spotify worker if configured
+        if self.sp:
+            self.spotify_worker = SpotifyPollingWorker(self.sp)
+            self.spotify_worker.signals.track_changed.connect(self._on_spotify_track_changed)
+            self.spotify_worker.signals.playback_state_changed.connect(self._on_playback_state_changed)
+            self.spotify_worker.signals.no_playback.connect(self._on_spotify_no_playback)
+            self.threadpool.start(self.spotify_worker)
+        
+        # Start Apple Music worker if on Windows (uses system media controls)
         if IS_WINDOWS:
+            self.apple_music_worker = AppleMusicPollingWorker(self.apple_music_client)
+            self.apple_music_worker.signals.track_changed.connect(self._on_apple_music_track_changed)
+            self.apple_music_worker.signals.no_playback.connect(self._on_apple_music_no_playback)
+            self.threadpool.start(self.apple_music_worker)
+            
+            # Windows Media Player as fallback for other apps
             self.windows_worker = WindowsMediaWorker()
             self.windows_worker.signals.track_changed.connect(self._on_windows_track_changed)
             self.windows_worker.signals.no_playback.connect(self._on_windows_no_playback)
@@ -1061,9 +1283,8 @@ class SpotifyPlayer(QMainWindow):
             self.progress_bar.fade_out()
             self.art.setAspectRatio(1.0) # Revert to square
 
-            # If the source that stopped was Windows, and Spotify has a track (even paused),
-            # switch back to showing the Spotify track.
-            if source == 'windows' and self._last_spotify_track_data:
+            # If a non-Spotify source stopped and Spotify has a track (even paused), switch back to Spotify
+            if source in ['windows', 'apple_music'] and self._last_spotify_track_data:
                 # Force load the last known Spotify track, preserving its paused state
                 spotify_item = self._last_spotify_track_data["item"]
                 spotify_is_playing = self._last_spotify_track_data["is_playing"]
@@ -1086,6 +1307,10 @@ class SpotifyPlayer(QMainWindow):
     @pyqtSlot()
     def _on_spotify_no_playback(self):
         self._handle_no_playback('spotify')
+    
+    @pyqtSlot()
+    def _on_apple_music_no_playback(self):
+        self._handle_no_playback('apple_music')
 
     @pyqtSlot()
     def _on_windows_no_playback(self):
@@ -1126,9 +1351,9 @@ class SpotifyPlayer(QMainWindow):
 
     @pyqtSlot(dict)
     def _on_windows_track_changed(self, data):
-        # Only process if spotify is not the active source, or if Spotify is paused.
-        # This allows Windows media (Apple Music/YouTube) to take over when Spotify is paused.
-        if self.active_media_source != 'spotify' or self._is_paused:
+        # Only process if spotify/apple_music are not the active source, or if they are paused.
+        # This allows Windows media (YouTube, etc.) to take over when primary services are paused.
+        if self.active_media_source not in ['spotify', 'apple_music'] or self._is_paused:
             self.idle_timer.stop()
             self._current_track_duration = 0 # Disable progress bar for generic media
             self.active_media_source = 'windows'
@@ -1157,6 +1382,41 @@ class SpotifyPlayer(QMainWindow):
                 preloaded_image=pil_img, 
                 aspect_ratio=1.0 # Keep square for music, change to 16:9 only if you detect video
             )
+    
+    @pyqtSlot(dict)
+    def _on_apple_music_track_changed(self, data):
+        # Apple Music takes priority over Windows generic media, but not over Spotify
+        if self.active_media_source == 'spotify' and not self._is_paused:
+            # Spotify is actively playing, don't interrupt
+            return
+        
+        self.idle_timer.stop()
+        self._current_track_duration = 0  # Apple Music doesn't provide duration via system controls
+        self.active_media_source = 'apple_music'
+        
+        item = data["item"]
+        thumbnail_data = data.get("thumbnail_data")
+        
+        # Process the thumbnail
+        pil_img = None
+        if thumbnail_data:
+            try:
+                pil_img = Image.open(io.BytesIO(thumbnail_data)).convert("RGB")
+            except Exception:
+                pil_img = None
+        
+        if not pil_img:
+            # Fallback placeholder if no art is found
+            pil_img = Image.new("RGB", (640, 640), "black")
+        
+        # Load track data with the enriched Apple Music metadata
+        self._load_track_data(
+            item,
+            data["is_playing"],
+            data["progress_ms"],
+            preloaded_image=pil_img,
+            aspect_ratio=1.0
+        )
 
     def _load_track_data(self, item, is_playing, progress_ms, preloaded_image=None, aspect_ratio=1.0):
         self._pending_track_data = None
@@ -2122,15 +2382,27 @@ class SpotifyPlayer(QMainWindow):
             self.exit_anim.start()
             return
 
-        if self.spotify_worker: self.spotify_worker.is_running = False
-        if IS_WINDOWS and self.windows_worker: self.windows_worker.stop()
+        if hasattr(self, 'spotify_worker') and self.spotify_worker: 
+            self.spotify_worker.stop()
+        if IS_WINDOWS:
+            if hasattr(self, 'apple_music_worker') and self.apple_music_worker: 
+                self.apple_music_worker.stop()
+            if hasattr(self, 'windows_worker') and self.windows_worker: 
+                self.windows_worker.stop()
         
         
         # Wait for running tasks to finish. With the improved worker sleep, this should be fast.
         if not self.threadpool.waitForDone(2000): # Wait up to 2 seconds
             print("Warning: Background threads did not finish gracefully.")
-        del self.spotify_worker
-        del self.windows_worker
+        
+        # Clean up worker references
+        if hasattr(self, 'spotify_worker'):
+            del self.spotify_worker
+        if IS_WINDOWS:
+            if hasattr(self, 'apple_music_worker'):
+                del self.apple_music_worker
+            if hasattr(self, 'windows_worker'):
+                del self.windows_worker
         del self.blob_manager
         del self.settings_dialog
         self._save_settings()
@@ -2172,6 +2444,11 @@ class SpotifyPlayer(QMainWindow):
             self.multi_monitor_mode = False
             self.is_wallpaper_mode = False
             self.showFullScreen()
+        
+        # Trigger playlist panel relayout after fullscreen toggle
+        if hasattr(self, 'playlist_panel') and self.playlist_panel:
+            QTimer.singleShot(50, self.playlist_panel.relayout)
+        
         QTimer.singleShot(0, self._restore_overlay_visibility)
     
     def switch_monitor(self):
@@ -2216,6 +2493,7 @@ class SpotifyPlayer(QMainWindow):
         QTimer.singleShot(100, lambda: (
             self.update_layout(),
             self._update_text_properties(),
+            self.playlist_panel.relayout() if hasattr(self, 'playlist_panel') and self.playlist_panel else None,
             self._restore_overlay_visibility()
         ))
     
@@ -2248,6 +2526,11 @@ class SpotifyPlayer(QMainWindow):
             self.setGeometry(total_rect)
             self.show()
             self.is_fullscreen = True
+        
+        # Trigger playlist panel relayout after multi-monitor toggle
+        if hasattr(self, 'playlist_panel') and self.playlist_panel:
+            QTimer.singleShot(50, self.playlist_panel.relayout)
+        
         QTimer.singleShot(0, self._restore_overlay_visibility)
             
     def shift_multi_monitor_content(self, direction):
@@ -2287,6 +2570,11 @@ class SpotifyPlayer(QMainWindow):
                 self.target_monitor_geo = new_geo
             
             self.update_layout()
+            
+            # Trigger playlist panel relayout after shifting monitors
+            if hasattr(self, 'playlist_panel') and self.playlist_panel:
+                QTimer.singleShot(50, self.playlist_panel.relayout)
+            
             QTimer.singleShot(0, self._restore_overlay_visibility)
 
     def shift_single_monitor_fullscreen(self, direction):
@@ -2320,6 +2608,7 @@ class SpotifyPlayer(QMainWindow):
         QTimer.singleShot(100, lambda: (
             self.update_layout(),
             self._update_text_properties(),
+            self.playlist_panel.relayout() if hasattr(self, 'playlist_panel') and self.playlist_panel else None,
             self.title and self.artist and self._trigger_notification(self.title.text(), self.artist.text(), self._current_pil_img, self._cur_text_color),
             self._restore_overlay_visibility()
         ))
@@ -2370,6 +2659,11 @@ class SpotifyPlayer(QMainWindow):
             self.setGeometry(target_geo)
             self.show()
             if self.tray_icon: self.tray_icon.show()
+        
+        # Trigger playlist panel relayout after wallpaper mode toggle
+        if hasattr(self, 'playlist_panel') and self.playlist_panel:
+            QTimer.singleShot(50, self.playlist_panel.relayout)
+        
         QTimer.singleShot(0, self._restore_overlay_visibility)
 
     def _position_overlay_at_monitor_bottom(self):
@@ -2695,11 +2989,17 @@ class SpotifyPlayer(QMainWindow):
                 self.shift_multi_monitor_content(-1)
             elif self.is_fullscreen:
                 self.shift_single_monitor_fullscreen(-1)
+            # Trigger playlist panel relayout after arrow key navigation
+            if hasattr(self, 'playlist_panel') and self.playlist_panel:
+                QTimer.singleShot(100, self.playlist_panel.relayout)
         elif event.key() == Qt.Key_Right:
             if self.multi_monitor_mode or (self.is_wallpaper_mode and hasattr(self, '_was_multi_monitor') and self._was_multi_monitor):
                 self.shift_multi_monitor_content(1)
             elif self.is_fullscreen:
                 self.shift_single_monitor_fullscreen(1)
+            # Trigger playlist panel relayout after arrow key navigation
+            if hasattr(self, 'playlist_panel') and self.playlist_panel:
+                QTimer.singleShot(100, self.playlist_panel.relayout)
         elif event.key() == Qt.Key_L:
             self.toggle_lights()
 

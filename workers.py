@@ -203,6 +203,7 @@ class SpotifyPollingWorker(QRunnable):
             if not self.is_running: return False
             QApplication.instance().thread().msleep(100)
         return True
+    def stop(self): self.is_running = False
     def run(self):
         while self.is_running:
             try:
@@ -238,13 +239,12 @@ if IS_WINDOWS:
                 if not manager: return None
                 session = manager.get_current_session()
                 
-                # Filter out Spotify specifically to allow the main worker to handle it.
-                # Allow Apple Music (often "AppleInc.AppleMusic...") and others.
+                # Filter out Spotify and Apple Music - they have dedicated workers
                 if not session: 
                     return None
                 
                 app_id = session.source_app_user_model_id.lower()
-                if "spotify" in app_id: 
+                if "spotify" in app_id or "apple" in app_id or "itunes" in app_id: 
                     return None
                     
                 info = await session.try_get_media_properties_async()
@@ -327,3 +327,149 @@ class FontLoaderWorker(QRunnable):
             if QFontDatabase.WritingSystem.Latin in db.writingSystems(family):
                 font_styles_cache[family] = sorted(db.styles(family)); base_families.append(family)
         self.signals.result.emit({"font_styles_cache": font_styles_cache, "base_font_families": base_families})
+
+
+# Apple Music Worker - Combines system media controls with Apple Music API enrichment
+if IS_WINDOWS:
+    class AppleMusicPollingWorker(QRunnable):
+        """
+        Polls for Apple Music playback using Windows Media Controls.
+        Enriches metadata with Apple Music API if configured.
+        """
+        class Signals(QObject): 
+            track_changed = pyqtSignal(dict)
+            no_playback = pyqtSignal()
+        
+        def __init__(self, apple_music_client=None):
+            super().__init__()
+            self.signals = self.Signals()
+            self.is_running = True
+            self.current_media_id = None
+            self.apple_music_client = apple_music_client
+        
+        def _generate_id(self, text):
+            """Generate consistent MD5 hash ID from text."""
+            if not text: return "unknown_id"
+            return hashlib.md5(text.encode('utf-8')).hexdigest()
+        
+        async def _get_media_info(self):
+            """Get currently playing media from Apple Music via system controls."""
+            try:
+                manager = await MediaManager.request_async()
+                if not manager: return None
+                session = manager.get_current_session()
+                
+                if not session: 
+                    return None
+                
+                # Only handle Apple Music
+                app_id = session.source_app_user_model_id.lower()
+                if "apple" not in app_id and "itunes" not in app_id:
+                    return None
+                
+                info = await session.try_get_media_properties_async()
+                if info and info.title:
+                    title = info.title
+                    artist = info.artist or "Unknown Artist"
+                    album_title = info.album_title or "Unknown Album"
+                    
+                    # Generate synthetic IDs
+                    track_id = self._generate_id(f"{title}{artist}")
+                    album_id = self._generate_id(f"{album_title}{artist}")
+                    
+                    # Fetch thumbnail
+                    thumbnail_data = None
+                    if info.thumbnail:
+                        try:
+                            stream = await info.thumbnail.open_read_async()
+                            if stream and stream.size > 0:
+                                thumbnail_data = bytearray(stream.size)
+                                data_reader = DataReader(stream)
+                                await data_reader.load_async(stream.size)
+                                data_reader.read_bytes(thumbnail_data)
+                        except Exception:
+                            thumbnail_data = None
+                    
+                    # Try to enrich with Apple Music API if available
+                    album_images = []
+                    if self.apple_music_client and self.apple_music_client.developer_token:
+                        try:
+                            # Search for the track to get proper album art and metadata
+                            search_results = self.apple_music_client.search(
+                                f"{title} {artist}",
+                                types="songs",
+                                limit=1
+                            )
+                            
+                            if search_results and "results" in search_results:
+                                songs = search_results.get("results", {}).get("songs", {}).get("data", [])
+                                if songs:
+                                    song = songs[0]
+                                    # Extract high-quality album artwork
+                                    artwork = song.get("attributes", {}).get("artwork", {})
+                                    if artwork and artwork.get("url"):
+                                        # Apple Music uses template URLs
+                                        base_url = artwork["url"]
+                                        # Replace template variables with desired dimensions
+                                        art_url = base_url.replace("{w}", "640").replace("{h}", "640")
+                                        album_images = [
+                                            {"url": art_url, "width": 640, "height": 640}
+                                        ]
+                                        
+                                        # Update IDs to use Apple Music IDs if available
+                                        track_id = song.get("id", track_id)
+                                        album_data = song.get("attributes", {}).get("albumName")
+                                        if album_data:
+                                            album_id = song.get("relationships", {}).get("albums", {}).get("data", [{}])[0].get("id", album_id)
+                        except Exception as e:
+                            print(f"Apple Music API enrichment failed: {e}")
+                    
+                    # Construct track data
+                    return {
+                        "id": track_id,
+                        "item": {
+                            "name": title,
+                            "artists": [{"name": artist}],
+                            "album": {
+                                "name": album_title,
+                                "images": album_images,
+                                "id": album_id
+                            },
+                            "id": track_id,
+                            "duration_ms": 0
+                        },
+                        "is_playing": True,
+                        "progress_ms": 0,
+                        "thumbnail_data": thumbnail_data if not album_images else None,
+                        "source": "apple_music"
+                    }
+            except Exception as e:
+                print(f"Apple Music media info error: {e}")
+            return None
+        
+        async def _main_loop(self):
+            """Main polling loop."""
+            while self.is_running:
+                info = await self._get_media_info()
+                if info:
+                    if info["id"] != self.current_media_id:
+                        self.current_media_id = info["id"]
+                        self.signals.track_changed.emit(info)
+                else:
+                    if self.current_media_id is not None:
+                        self.current_media_id = None
+                        self.signals.no_playback.emit()
+                await asyncio.sleep(2)
+        
+        @pyqtSlot()
+        def run(self):
+            asyncio.run(self._main_loop())
+        
+        def stop(self):
+            self.is_running = False
+else:
+    # Create placeholder class for non-Windows systems
+    class AppleMusicPollingWorker:
+        """Placeholder for non-Windows systems."""
+        def __init__(self, *args, **kwargs):
+            pass

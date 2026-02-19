@@ -1,0 +1,19 @@
+# Dynamic Player Requirements
+
+# Core dependencies
+PyQt5>=5.15.0
+Pillow>=8.0.0
+spotipy>=2.19.0
+requests>=2.25.0
+scikit-learn>=0.24.0
+pystray>=0.19.0
+
+# Windows-specific (for media controls)
+winsdk>=1.0.0; sys_platform == 'win32'
+
+# Apple Music API support (optional)
+PyJWT>=2.0.0
+cryptography>=3.0.0
+
+# Note: PyJWT and cryptography are only required if you want to use Apple Music API integration
+# For basic Apple Music playback detection via Windows Media Player, these are not needed

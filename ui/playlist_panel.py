@@ -1,5 +1,5 @@
 from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF, QParallelAnimationGroup, QAbstractAnimation
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication, QScrollArea
 from PyQt5.QtGui import QColor, QPixmap, QCursor, QPainter, QBrush, QPainterPath, QBitmap
 import requests
 
@@ -537,7 +537,6 @@ class PlaylistPanel(QWidget):
     def __init__(self, parent=None, main_window=None):
         super().__init__(parent)
         self.main_window = main_window  # Reference to SpotifyPlayer for saving
-        self.setFixedWidth(self.PANEL_WIDTH)
         self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.NoFocus)
@@ -548,20 +547,35 @@ class PlaylistPanel(QWidget):
         self.layout.setContentsMargins(12, 8, 12, 12)
         self.layout.setSpacing(0)
         
-        # Playlist grid (no scrolling - expands upward)
-        self.playlist_container = QWidget(self)
+        # Create scroll area for playlist grid (scrollable without visible scrollbar)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        
+        # Playlist grid container
+        self.playlist_container = QWidget()
         self.playlist_container.setStyleSheet("background: transparent;")
         self.playlist_grid = QGridLayout(self.playlist_container)
         self.playlist_grid.setContentsMargins(0, 0, 0, 0)
         self.playlist_grid.setSpacing(self.GRID_SPACING)
         self.playlist_grid.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        
+        # Set the container as the scroll area's widget
+        self.scroll_area.setWidget(self.playlist_container)
 
-        # Add to main layout with stretch to allow upward expansion
-        self.layout.addWidget(self.playlist_container, 1, Qt.AlignHCenter | Qt.AlignTop)
+        # Add scroll area to main layout
+        self.layout.addWidget(self.scroll_area, 1)
         
         self._playlists = []
         self._user_playlists = []  # Preloaded user playlists
-        self._show_add_square = True  # Track if add square should be visible
+        self._show_add_square = True  # Always show add square now (scrollable)
+        self._current_columns = 4  # Default, will be calculated dynamically
+        
+        # Set initial size - don't use setFixedWidth here, let _update_size handle it
+        self.setMinimumWidth(self.PANEL_WIDTH)
         
         # Update size based on content
         self._update_size()
@@ -609,51 +623,131 @@ class PlaylistPanel(QWidget):
         self._playlists = [pl for pl in self._playlists if pl.get('id') != playlist_id]
         self.set_playlists(self._playlists)
 
+    def relayout(self):
+        """Force a relayout of the grid without changing playlist contents.
+        
+        Call this when the window is resized or monitor changes to recalculate
+        the grid dimensions. Add button is always shown (panel is scrollable).
+        """
+        # Recalculate size first (this updates _current_columns)
+        self._update_size()
+        
+        # Clear and repopulate the grid with current playlists
+        while self.playlist_grid.count():
+            item = self.playlist_grid.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        
+        # Calculate total number of items (always include add button)
+        total_items = len(self._playlists) + 1
+        
+        # Use dynamically calculated columns from _update_size
+        columns = self._current_columns
+        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 1
+        
+        # Add all playlists in order to the grid
+        for idx, pl in enumerate(self._playlists):
+            row = idx // columns
+            col = idx % columns
+            # Reverse row order so items grow upward (new rows appear at top)
+            display_row = total_rows - row - 1
+            widget = PlaylistItemWidget(pl, panel=self, parent=self.playlist_container)
+            self.playlist_grid.addWidget(widget, display_row, col, alignment=Qt.AlignHCenter)
+        
+        # ALWAYS add the "Add Playlist" square at the end
+        add_idx = len(self._playlists)
+        row = add_idx // columns
+        col = add_idx % columns
+        # Reverse row order for add button too
+        display_row = total_rows - row - 1
+        add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
+        self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
+        
+        # Final size adjustment after widgets are added
+        self._update_size()
+        
+        # Force Qt to process layout updates immediately
+        self.playlist_container.updateGeometry()
+        self.updateGeometry()
+        QApplication.processEvents()
+        
+        # Update overlay size to accommodate the new panel size
+        if hasattr(self.parent(), 'update_size'):
+            self.parent().update_size()
+            QApplication.processEvents()
+
+    def _calculate_optimal_columns(self, screen_width, num_items):
+        """Calculate optimal number of columns based on screen width and item count."""
+        # Available width (use 90% of screen width max)
+        max_panel_width = int(screen_width * 0.9)
+        
+        # Calculate how many columns can fit
+        # Each item needs ITEM_WIDTH + GRID_SPACING, minus one spacing
+        single_item_width = self.ITEM_WIDTH + self.GRID_SPACING
+        max_columns_by_width = max(1, (max_panel_width + self.GRID_SPACING) // single_item_width)
+        
+        # Don't exceed 8 columns (max for ultrawide support) or number of items
+        optimal_columns = min(8, max_columns_by_width, num_items if num_items > 0 else 1)
+        
+        return optimal_columns
+    
     def _update_size(self):
         """Update panel size based on number of playlists.
         
-        Hides the add square when total height would exceed available space.
+        Always shows add square. Panel becomes scrollable when content exceeds screen space.
+        Dynamically calculates columns based on screen width.
         """
         num_playlists = len(self._playlists)
         
         # Get screen geometry to determine available space
         from PyQt5.QtWidgets import QApplication
-        screen = QApplication.primaryScreen()
+        # Try to get the screen where the main window is currently displayed
+        screen = None
+        if self.main_window:
+            screen = QApplication.screenAt(self.main_window.geometry().center())
+        if not screen:
+            screen = QApplication.primaryScreen()
+        
         if screen:
             screen_height = screen.geometry().height()
-            # Max height is 70% of screen for dynamic content
-            max_height = int(screen_height * 0.7)
+            screen_width = screen.geometry().width()
+            # Max height is 80% of screen for panel (scrollable if content exceeds)
+            max_panel_height = int(screen_height * 0.8)
         else:
-            max_height = 600  # Fallback
+            max_panel_height = 800  # Fallback
+            screen_width = 1920  # Fallback
         
-        # Calculate required height with add square
+        # Calculate optimal columns based on screen width
+        # ALWAYS include the add button in calculations
         total_items_with_add = num_playlists + 1
-        columns = min(total_items_with_add, 4)
-        rows_with_add = (total_items_with_add + 3) // 4
-        height_with_add = (rows_with_add * self.ITEM_HEIGHT) + 40  # Add margins
+        columns = self._calculate_optimal_columns(screen_width, total_items_with_add)
         
-        # Decide if we should show the add square
-        self._show_add_square = height_with_add <= max_height
+        # Store the calculated columns
+        self._current_columns = columns
         
-        # Calculate actual items and height to display
-        if self._show_add_square:
-            total_items = total_items_with_add
-            target_height = height_with_add
-        else:
-            total_items = num_playlists
-            columns = min(total_items, 4)
-            rows = (total_items + 3) // 4 if total_items > 0 else 0
-            target_height = (rows * self.ITEM_HEIGHT) + 40 if total_items > 0 else 40
+        # ALWAYS show add square (panel is scrollable now)
+        self._show_add_square = True
         
-        # Calculate width based on actual displayed items
+        # Calculate required height for all content (playlists + add button)
+        total_items = total_items_with_add
+        rows = (total_items + columns - 1) // columns if total_items > 0 else 1
+        content_height = (rows * self.ITEM_HEIGHT) + 40 if total_items > 0 else 80
+        
+        # Panel height is the minimum of content height and max allowed height
+        target_height = min(content_height, max_panel_height)
+        
+        # Calculate width based on columns
         if total_items > 0:
-            columns = min(total_items, 4)
             content_width = (columns * self.ITEM_WIDTH) + ((columns - 1) * self.GRID_SPACING)
             self.playlist_container.setFixedWidth(content_width)
             target_width = max(self.PANEL_WIDTH, content_width + 24)
         else:
             self.playlist_container.setFixedWidth(self.PANEL_WIDTH)
             target_width = self.PANEL_WIDTH
+        
+        # Set container height for scrolling
+        self.playlist_container.setMinimumHeight(content_height)
 
         self.setFixedWidth(target_width)
         self.setFixedHeight(target_height)
@@ -665,22 +759,22 @@ class PlaylistPanel(QWidget):
     def set_playlists(self, playlists, skip_save=False):
         self._playlists = playlists
         
-        # First, calculate if add square should be shown based on available space
+        # First, calculate columns and size based on available space
         self._update_size()
         
-        # Repopulate the playlist grid based on calculated _show_add_square
+        # Repopulate the playlist grid (always show add button)
         while self.playlist_grid.count():
             item = self.playlist_grid.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
-        # Calculate total number of items to determine grid layout
-        total_items = len(self._playlists) + (1 if self._show_add_square else 0)
+        # Calculate total number of items (always include add button)
+        total_items = len(self._playlists) + 1
         
-        # Determine grid dimensions (4 columns)
-        columns = 4
-        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 0
+        # Use dynamically calculated columns from _update_size
+        columns = self._current_columns
+        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 1
         
         # Add all playlists in order to the grid
         for idx, pl in enumerate(self._playlists):
@@ -691,18 +785,27 @@ class PlaylistPanel(QWidget):
             widget = PlaylistItemWidget(pl, panel=self, parent=self.playlist_container)
             self.playlist_grid.addWidget(widget, display_row, col, alignment=Qt.AlignHCenter)
         
-        # Add the "Add Playlist" square at the end if there's space
-        if self._show_add_square:
-            add_idx = len(self._playlists)
-            row = add_idx // columns
-            col = add_idx % columns
-            # Reverse row order for add button too
-            display_row = total_rows - row - 1
-            add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
-            self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
+        # ALWAYS add the "Add Playlist" square at the end
+        add_idx = len(self._playlists)
+        row = add_idx // columns
+        col = add_idx % columns
+        # Reverse row order for add button too
+        display_row = total_rows - row - 1
+        add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
+        self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
         
         # Recalculate size after all widgets are added
         self._update_size()
+        
+        # Force Qt to process layout updates immediately
+        self.playlist_container.updateGeometry()
+        self.updateGeometry()
+        QApplication.processEvents()
+        
+        # Update overlay size to accommodate the new panel size
+        if hasattr(self.parent(), 'update_size'):
+            self.parent().update_size()
+            QApplication.processEvents()
         
         # Trigger save unless explicitly skipped
         if not skip_save:

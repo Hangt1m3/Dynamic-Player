@@ -47,6 +47,9 @@ class OverlayWidget(QWidget):
         
         self.wallpaper_button = CircularButton(tooltip="Toggle Wallpaper Mode (F12)", icon_char="🎨")
         self.wallpaper_button.setFocusPolicy(Qt.NoFocus)
+
+        self.background_only_button = CircularButton(tooltip="Toggle Background Only Mode", icon_char="🌌")
+        self.background_only_button.setFocusPolicy(Qt.NoFocus)
         
         self.notif_mode_button = CircularButton(tooltip="Notification Only Mode", icon_char="📬")
         self.notif_mode_button.setFocusPolicy(Qt.NoFocus)
@@ -61,7 +64,7 @@ class OverlayWidget(QWidget):
         # This ensures clicking them doesn't steal focus from the main window,
         # allowing arrow keys and other binds to keep working.
         buttons = [self.settings_button, self.lights_button, self.multi_monitor_button, 
-                   self.wallpaper_button, self.notif_mode_button, self.fullscreen_button,
+                   self.wallpaper_button, self.background_only_button, self.notif_mode_button, self.fullscreen_button,
                    self.switch_monitor_button]
         for btn in buttons: btn.setFocusPolicy(Qt.NoFocus)
         
@@ -71,6 +74,7 @@ class OverlayWidget(QWidget):
         container_layout.addWidget(self.switch_monitor_button)
         container_layout.addWidget(self.multi_monitor_button)
         container_layout.addWidget(self.wallpaper_button)
+        container_layout.addWidget(self.background_only_button)
         container_layout.addWidget(self.notif_mode_button)
         
         self.main_layout.addWidget(self.button_container, 0, Qt.AlignHCenter)

@@ -107,6 +107,8 @@ class SpotifyPlayer(QMainWindow):
         self.blob_density = 200000 # Default, will be loaded from settings
         self.blob_manager = None
         self.notification_only_mode = False
+        self.background_only_mode = False
+        self._background_only_target_state = False
         self.recent_colors = []
         self.drag_pos = None
         self.resize_corner = None  # Track which corner is being dragged: TL, TR, BL, BR, None
@@ -186,6 +188,7 @@ class SpotifyPlayer(QMainWindow):
             self._check_for_first_run()
 
         self._setup_ui()
+        self._apply_background_only_mode(self.background_only_mode, animate=False)
         self._setup_window_controls()
         self._load_saved_playlists()  # Load saved playlists before preloading new ones
         self._setup_animations()
@@ -203,6 +206,7 @@ class SpotifyPlayer(QMainWindow):
         self.overlay.switch_monitor_button.clicked.connect(self.switch_monitor)
         self.overlay.multi_monitor_button.clicked.connect(self.toggle_multi_monitor_fullscreen)
         self.overlay.wallpaper_button.clicked.connect(self.toggle_wallpaper_mode)
+        self.overlay.background_only_button.clicked.connect(self.toggle_background_only_mode)
         self.overlay.notif_mode_button.clicked.connect(self.toggle_notification_only_mode)
 
         # --- Playlist/Album Panel (Centered in overlay, triggered by right-click) ---
@@ -534,6 +538,7 @@ class SpotifyPlayer(QMainWindow):
         self.lights_enabled = as_bool(settings.value("lights_enabled"), True)
         self.govee_brightness_override = as_bool(settings.value("govee_brightness_override"), False)
         self.minimize_to_notification_only = as_bool(settings.value("minimize_to_notification_only"), True)
+        self.background_only_mode = as_bool(settings.value("background_only_mode"), False)
 
         # Numbers
         self.default_govee_brightness = safe_cast(settings.value("default_govee_brightness"), float, 1.0)
@@ -606,6 +611,7 @@ class SpotifyPlayer(QMainWindow):
         
         settings.setValue("blob_density", self.blob_density)
         settings.setValue("start_in_wallpaper_mode", "true" if self.is_wallpaper_mode else "false")
+        settings.setValue("background_only_mode", "true" if self.background_only_mode else "false")
 
         if self.is_wallpaper_mode:
             settings.setValue("geometry", self._saved_geometry)
@@ -691,6 +697,13 @@ class SpotifyPlayer(QMainWindow):
         
         self.update_art_shadow_properties()
         self.setTextAlpha(self._text_alpha)
+
+        self._content_fade_anim = QVariantAnimation(self)
+        self._content_fade_anim.setDuration(260)
+        self._content_fade_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._content_fade_anim.valueChanged.connect(self._set_player_content_opacity)
+        self._content_fade_anim.finished.connect(self._on_content_fade_finished)
+        self._set_player_content_opacity(1.0)
 
     def _setup_window_controls(self):
         self.window_controls = QWidget(self)
@@ -2134,6 +2147,65 @@ class SpotifyPlayer(QMainWindow):
             self.hide()
             try: self.exit_anim.finished.disconnect(self._hide_for_notif_mode)
             except: pass
+
+    def _set_player_content_opacity(self, value):
+        opacity = max(0.0, min(1.0, float(value)))
+        if hasattr(self, 'art') and self.art:
+            self.art.setOpacity(opacity)
+        if hasattr(self, 'title') and self.title:
+            self.title.set_opacity(opacity)
+        if hasattr(self, 'album_name') and self.album_name:
+            self.album_name.set_opacity(opacity)
+        if hasattr(self, 'artist') and self.artist:
+            self.artist.set_opacity(opacity)
+        if hasattr(self, 'progress_bar') and self.progress_bar and hasattr(self.progress_bar, 'opacity_effect') and self.progress_bar.opacity_effect:
+            self.progress_bar.opacity_effect.setOpacity(opacity)
+            self.progress_bar.update()
+
+    def _set_player_content_visible(self, visible):
+        if hasattr(self, 'art_container') and self.art_container:
+            self.art_container.setVisible(visible)
+        if hasattr(self, 'details_widget') and self.details_widget:
+            self.details_widget.setVisible(visible)
+
+    def _on_content_fade_finished(self):
+        if self._background_only_target_state:
+            self._set_player_content_visible(False)
+        else:
+            self._set_player_content_visible(True)
+            self._set_player_content_opacity(1.0)
+        self.update_layout()
+        self.update()
+
+    def _apply_background_only_mode(self, enabled, animate=True):
+        enabled = bool(enabled)
+        self.background_only_mode = enabled
+        self._background_only_target_state = enabled
+
+        if not hasattr(self, '_content_fade_anim'):
+            return
+
+        self._content_fade_anim.stop()
+        self._set_player_content_visible(True)
+
+        start_opacity = self.art._opacity if hasattr(self, 'art') and self.art else (0.0 if enabled else 1.0)
+        end_opacity = 0.0 if enabled else 1.0
+
+        if animate and abs(start_opacity - end_opacity) > 0.001:
+            self._content_fade_anim.setStartValue(start_opacity)
+            self._content_fade_anim.setEndValue(end_opacity)
+            self._content_fade_anim.start()
+            return
+
+        self._set_player_content_opacity(end_opacity)
+        if enabled:
+            self._set_player_content_visible(False)
+        self.update_layout()
+        self.update()
+
+    def toggle_background_only_mode(self):
+        """Toggle a background-only mode that hides player content while keeping the app interactive."""
+        self._apply_background_only_mode(not self.background_only_mode, animate=True)
 
     def _update_blobs(self):
         palette = self._current_blob_palette

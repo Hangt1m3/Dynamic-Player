@@ -1707,24 +1707,26 @@ class SpotifyPlayer(QMainWindow):
         self.art_scale_anim.setEndValue(1.0)
         self.art_scale_anim.start()
 
-        # Only change lights for Spotify tracks
-        if self.active_media_source == 'spotify':
-            lights_config = cached_data.get("lights_config", {})
-            if lights_config.get("mode") == "custom" and lights_config.get("palette"):
-                lights_palette_to_send = lights_config["palette"]
-            else:
-                lights_palette_to_send = self._current_lights_palette
-            
-            new_lights_config = {
-                "palette": lights_palette_to_send,
-                "devices": self.lights_enabled and self.govee_devices,
-                "brightness": self.govee_brightness
-            }
-            if new_lights_config != self._last_sent_lights_config:
-                self._last_sent_lights_config = new_lights_config
-                worker = GoveeWorker(self._govee, lights_palette_to_send, self.lights_enabled and self.govee_devices, self.govee_brightness)
-                worker.signals.error.connect(self._on_govee_error)
-                self.threadpool.start(worker)   
+        # Update lights for the currently active media source using the same palette/brightness logic.
+        lights_config = cached_data.get("lights_config", {})
+        if lights_config.get("mode") == "custom" and lights_config.get("palette"):
+            lights_palette_to_send = lights_config["palette"]
+        else:
+            lights_palette_to_send = self._current_lights_palette
+
+        lights_enabled = bool(self.lights_enabled and self.govee_devices)
+        palette_signature = tuple(tuple(int(c) for c in color) for color in (lights_palette_to_send or []))
+        devices_signature = tuple((d.get("device"), d.get("model")) for d in (self.govee_devices if lights_enabled else []))
+        new_lights_config = {
+            "palette": palette_signature,
+            "devices": devices_signature,
+            "brightness": self.govee_brightness,
+        }
+        if new_lights_config != self._last_sent_lights_config:
+            self._last_sent_lights_config = new_lights_config
+            worker = GoveeWorker(self._govee, lights_palette_to_send, lights_enabled, self.govee_brightness)
+            worker.signals.error.connect(self._on_govee_error)
+            self.threadpool.start(worker)
         self.notification_widget.fade_out()
         self.textAlpha = 255
         self._bg_crossfade_lerp = 0.0  # Ensure it starts from the "from" state
@@ -2975,6 +2977,12 @@ class SpotifyPlayer(QMainWindow):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
+            if not self._is_overlay_mode_allowed():
+                if self.overlay and not self.overlay.isHidden():
+                    self.overlay.fade_out()
+                    self._overlay_restore_pending = True
+                event.accept()
+                return
             # Toggle overlay visibility with right-click
             if self.overlay.isHidden():
                 # Show overlay
@@ -3014,6 +3022,11 @@ class SpotifyPlayer(QMainWindow):
         """Reposition the overlay if it's visible; optionally force-show it."""
         if not self.overlay:
             return
+        if not self._is_overlay_mode_allowed():
+            if not self.overlay.isHidden():
+                self.overlay.fade_out()
+                self._overlay_restore_pending = True
+            return
         if self.overlay.isHidden():
             if not force_show:
                 return
@@ -3030,12 +3043,44 @@ class SpotifyPlayer(QMainWindow):
 
     def _remember_overlay_visibility(self):
         """Remember whether the overlay was visible before a mode change."""
-        self._overlay_was_visible = bool(self.overlay and not self.overlay.isHidden())
+        currently_visible = bool(self.overlay and not self.overlay.isHidden())
+        pending_restore = bool(getattr(self, "_overlay_restore_pending", False))
+        self._overlay_was_visible = currently_visible or pending_restore
+
+    def _is_overlay_mode_allowed(self):
+        return bool(self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode)
 
     def _restore_overlay_visibility(self):
         """Restore overlay visibility after a mode change if it was visible."""
-        if getattr(self, "_overlay_was_visible", False):
-            self._reposition_overlay_if_visible(force_show=True)
+        if not self.overlay:
+            return
+
+        should_restore = bool(
+            getattr(self, "_overlay_was_visible", False)
+            or getattr(self, "_overlay_restore_pending", False)
+        )
+
+        if not self._is_overlay_mode_allowed():
+            if should_restore and not self.overlay.isHidden():
+                self.overlay.fade_out()
+            self._overlay_restore_pending = should_restore
+            return
+
+        if not should_restore:
+            return
+
+        if hasattr(self, 'playlist_panel') and self.playlist_panel:
+            self.playlist_panel.relayout()
+
+        self.overlay.update_size()
+        self._position_overlay_at_monitor_bottom()
+        if self.overlay.isHidden():
+            self.overlay.fade_in()
+        else:
+            self.overlay.raise_()
+
+        self._overlay_restore_pending = False
+        self._overlay_was_visible = False
 
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.LeftButton:

@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF, QParallelAnimationGroup, QAbstractAnimation
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF, QParallelAnimationGroup, QAbstractAnimation, QEvent
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication, QScrollArea
 from PyQt5.QtGui import QColor, QPixmap, QCursor, QPainter, QBrush, QPainterPath, QBitmap
 import requests
@@ -48,6 +48,8 @@ class OverlayFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._opacity = 0.0
+        self._scale = 1.0
+        self._base_size = 196
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
     
@@ -63,6 +65,24 @@ class OverlayFrame(QFrame):
     def setOpacity(self, value):
         self._opacity = value
         self.update()
+
+    @pyqtProperty(int)
+    def baseSize(self):
+        return self._base_size
+
+    @baseSize.setter
+    def baseSize(self, value):
+        self._base_size = max(1, int(value))
+        self.update()
+
+    @pyqtProperty(float)
+    def scale(self):
+        return self._scale
+
+    @scale.setter
+    def scale(self, value):
+        self._scale = value
+        self.update()
     
     def paintEvent(self, event):
         if self._opacity <= 0.0:
@@ -74,11 +94,72 @@ class OverlayFrame(QFrame):
         
         try:
             painter.setRenderHint(QPainter.Antialiasing, True)
-            # Draw rounded rectangle with current opacity - radius 20 to match cover art
+            rect = QRectF(self.rect())
+            side = min(float(self._base_size), rect.width(), rect.height())
+            base_rect = QRectF(
+                rect.center().x() - side / 2.0,
+                rect.center().y() - side / 2.0,
+                side,
+                side,
+            )
+            painter.translate(base_rect.center())
+            painter.scale(self._scale, self._scale)
+            painter.translate(-base_rect.center())
             path = QPainterPath()
-            path.addRoundedRect(QRectF(self.rect()), 20, 20)
-            color = QColor(0, 0, 0, int(220 * self._opacity))
+            path.addRoundedRect(base_rect, 20, 20)
+            color = QColor(0, 0, 0, int(160 * self._opacity))
             painter.fillPath(path, color)
+        finally:
+            painter.end()
+
+
+class ScaledCoverLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scale = 1.0
+        self._base_size = 196
+
+    @pyqtProperty(float)
+    def scale(self):
+        return self._scale
+
+    @scale.setter
+    def scale(self, value):
+        self._scale = value
+        self.update()
+
+    @pyqtProperty(int)
+    def baseSize(self):
+        return self._base_size
+
+    @baseSize.setter
+    def baseSize(self, value):
+        self._base_size = max(1, int(value))
+        self.update()
+
+    def paintEvent(self, event):
+        pixmap = self.pixmap()
+        if not pixmap or pixmap.isNull():
+            return super().paintEvent(event)
+
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            rect = QRectF(self.rect())
+            side = min(float(self._base_size), rect.width(), rect.height())
+            base_rect = QRectF(
+                rect.center().x() - side / 2.0,
+                rect.center().y() - side / 2.0,
+                side,
+                side,
+            )
+            painter.translate(base_rect.center())
+            painter.scale(self._scale, self._scale)
+            painter.translate(-base_rect.center())
+            painter.drawPixmap(base_rect.toRect(), pixmap)
         finally:
             painter.end()
 
@@ -96,9 +177,11 @@ class PlaylistItemWidget(QFrame):
         self._overlay_opacity = 0.0  # For fade animation
         self._play_scale = 1.0
         self._shuffle_scale = 1.0
-        self.cover_label = QLabel(self)
-        self.cover_label.setFixedSize(self.SQUARE_SIZE, self.SQUARE_SIZE)
-        self.cover_label.move(12, 12)
+        host_size = self.SQUARE_SIZE + 24
+        self.cover_label = ScaledCoverLabel(self)
+        self.cover_label.setFixedSize(host_size, host_size)
+        self.cover_label.move(0, 0)
+        self.cover_label.baseSize = self.SQUARE_SIZE
         self.cover_label.setStyleSheet("background: transparent;")
         self.cover_label.setScaledContents(False)
         # Load cover art: prefer cached base64, then try Spotify images, then cover URL
@@ -157,8 +240,10 @@ class PlaylistItemWidget(QFrame):
                     self.cover_label.setStyleSheet("background: #222;")
         # Overlay for details/buttons - custom widget with manual opacity
         self.overlay = OverlayFrame(self)
-        self.overlay.setGeometry(12, 12, self.SQUARE_SIZE, self.SQUARE_SIZE)
+        self.overlay.setGeometry(0, 0, host_size, host_size)
+        self.overlay.baseSize = self.SQUARE_SIZE
         self.overlay.setOpacity(0.0)  # Start invisible
+        self.overlay.scale = 1.0
         self.overlay.show()  # Keep visible for event handling
         vbox = QVBoxLayout(self.overlay)
         vbox.setContentsMargins(12, 12, 12, 12)
@@ -233,9 +318,18 @@ class PlaylistItemWidget(QFrame):
         self.shuffle_btn.installEventFilter(self)
         
         # Animation setup
-        self.overlay_fade_anim = QPropertyAnimation(self.overlay, b"opacity")
-        self.overlay_fade_anim.setDuration(200)
-        self.overlay_fade_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self.cover_scale_anim = QPropertyAnimation(self.cover_label, b"scale")
+        self.cover_scale_anim.setDuration(180)
+        self.cover_scale_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        self.overlay_scale_anim = QPropertyAnimation(self.overlay, b"scale")
+        self.overlay_scale_anim.setDuration(180)
+        self.overlay_scale_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.overlay_scale_anim.finished.connect(self._on_overlay_scale_finished)
+
+        self.overlay_opacity_anim = QPropertyAnimation(self.overlay, b"opacity")
+        self.overlay_opacity_anim.setDuration(180)
+        self.overlay_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
     
     def _calculate_font_size(self, text):
         """Calculate optimal font size based on text length to fit in square."""
@@ -253,6 +347,27 @@ class PlaylistItemWidget(QFrame):
 
     def sizeHint(self):
         return QSize(self.SQUARE_SIZE + 24, self.SQUARE_SIZE + 24)
+
+    def _animate_hover_scale(self, target_scale):
+        self.cover_scale_anim.stop()
+        self.cover_scale_anim.setStartValue(self.cover_label.scale)
+        self.cover_scale_anim.setEndValue(target_scale)
+        self.cover_scale_anim.start()
+
+        self.overlay_scale_anim.stop()
+        self.overlay_scale_anim.setStartValue(self.overlay.scale)
+        self.overlay_scale_anim.setEndValue(target_scale)
+        self.overlay_scale_anim.start()
+
+    def _animate_overlay_opacity(self, target_opacity):
+        self.overlay_opacity_anim.stop()
+        self.overlay_opacity_anim.setStartValue(self.overlay.opacity)
+        self.overlay_opacity_anim.setEndValue(target_opacity)
+        self.overlay_opacity_anim.start()
+
+    def _on_overlay_scale_finished(self):
+        if not self.hovered:
+            self.overlay.setOpacity(0.0)
     
     @pyqtProperty(float)
     def playScale(self):
@@ -312,10 +427,9 @@ class PlaylistItemWidget(QFrame):
             self._shuffle_anim = anim
 
     def enterEvent(self, event):
-        self.overlay_fade_anim.stop()
-        self.overlay_fade_anim.setStartValue(self.overlay._opacity)
-        self.overlay_fade_anim.setEndValue(1.0)
-        self.overlay_fade_anim.start()
+        self.hovered = True
+        self._animate_overlay_opacity(0.9)
+        self._animate_hover_scale(1.08)
         # Show buttons and text on hover
         self.name_label.setVisible(True)
         self.play_btn.setVisible(True)
@@ -324,10 +438,9 @@ class PlaylistItemWidget(QFrame):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.overlay_fade_anim.stop()
-        self.overlay_fade_anim.setStartValue(self.overlay._opacity)
-        self.overlay_fade_anim.setEndValue(0.0)
-        self.overlay_fade_anim.start()
+        self.hovered = False
+        self._animate_hover_scale(1.0)
+        self._animate_overlay_opacity(0.0)
         # Hide buttons and text when not hovering
         self.name_label.setVisible(False)
         self.play_btn.setVisible(False)
@@ -444,7 +557,7 @@ class PlaylistPanel(QWidget):
 
     PANEL_WIDTH = 400  # Base width; expands dynamically with playlist count
     MIN_HEIGHT = 80  # Minimum height (just add button)
-    ITEM_HEIGHT = 240  # Height per playlist item (includes square + margins)
+    ITEM_HEIGHT = PlaylistItemWidget.SQUARE_SIZE + 24
     ITEM_WIDTH = 220  # Width per playlist item (includes square + margins)
     GRID_SPACING = 12
     playlist_selected = pyqtSignal(str)
@@ -554,6 +667,9 @@ class PlaylistPanel(QWidget):
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.viewport().installEventFilter(self)
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._update_scroll_hints)
+        self.scroll_area.verticalScrollBar().rangeChanged.connect(lambda _min, _max: self._update_scroll_hints())
         
         # Playlist grid container
         self.playlist_container = QWidget()
@@ -568,19 +684,92 @@ class PlaylistPanel(QWidget):
 
         # Add scroll area to main layout
         self.layout.addWidget(self.scroll_area, 1)
+
+        self.scroll_up_hint = QLabel("▲", self)
+        self.scroll_down_hint = QLabel("▼", self)
+        for hint in (self.scroll_up_hint, self.scroll_down_hint):
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setFixedSize(28, 22)
+            hint.setAttribute(Qt.WA_TransparentForMouseEvents)
+            hint.setStyleSheet(
+                "QLabel {"
+                " color: rgba(255,255,255,215);"
+                " background: rgba(0,0,0,110);"
+                " border-radius: 11px;"
+                " font-size: 14px;"
+                " font-weight: bold;"
+                "}"
+            )
+            hint.hide()
         
         self._playlists = []
         self._user_playlists = []  # Preloaded user playlists
         self._show_add_square = True  # Always show add square now (scrollable)
         self._current_columns = 4  # Default, will be calculated dynamically
+        self._scroll_step = self.ITEM_HEIGHT + self.GRID_SPACING
         
         # Set initial size - don't use setFixedWidth here, let _update_size handle it
         self.setMinimumWidth(self.PANEL_WIDTH)
         
         # Update size based on content
         self._update_size()
+        self._position_scroll_hints()
+        self._update_scroll_hints()
         # Start hidden
         self.hide()
+
+    def eventFilter(self, obj, event):
+        if obj == self.scroll_area.viewport() and event.type() == QEvent.Wheel:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                delta = event.pixelDelta().y()
+            if delta != 0:
+                self._scroll_by_tile(delta)
+                return True
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_scroll_hints()
+        self._update_scroll_hints()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._position_scroll_hints()
+        self._update_scroll_hints()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._update_scroll_hints()
+
+    def _scroll_by_tile(self, delta):
+        scrollbar = self.scroll_area.verticalScrollBar()
+        step = max(1, self._scroll_step)
+        current = scrollbar.value()
+        current_index = round(current / step)
+        target_index = current_index - 1 if delta > 0 else current_index + 1
+        target_value = target_index * step
+        target_value = max(scrollbar.minimum(), min(scrollbar.maximum(), target_value))
+        scrollbar.setValue(target_value)
+
+    def _position_scroll_hints(self):
+        if not hasattr(self, 'scroll_up_hint') or not hasattr(self, 'scroll_down_hint'):
+            return
+        top_margin = self.layout.contentsMargins().top()
+        bottom_margin = self.layout.contentsMargins().bottom()
+        x = (self.width() - self.scroll_up_hint.width()) // 2
+        self.scroll_up_hint.move(x, top_margin + 2)
+        self.scroll_down_hint.move(x, self.height() - bottom_margin - self.scroll_down_hint.height() - 2)
+
+    def _update_scroll_hints(self):
+        if not hasattr(self, 'scroll_up_hint') or not hasattr(self, 'scroll_down_hint'):
+            return
+        scrollbar = self.scroll_area.verticalScrollBar()
+        has_overflow = scrollbar.maximum() > scrollbar.minimum()
+        at_top = scrollbar.value() <= scrollbar.minimum()
+        at_bottom = scrollbar.value() >= scrollbar.maximum()
+        self.scroll_up_hint.setVisible(has_overflow and not at_top and self.isVisible())
+        self.scroll_down_hint.setVisible(has_overflow and not at_bottom and self.isVisible())
 
     def set_user_playlists(self, playlists, albums=None):
         """Set the preloaded user playlists and albums (public/private from Spotify)."""
@@ -671,6 +860,7 @@ class PlaylistPanel(QWidget):
         self.playlist_container.updateGeometry()
         self.updateGeometry()
         QApplication.processEvents()
+        self._update_scroll_hints()
         
         # Update overlay size to accommodate the new panel size
         if hasattr(self.parent(), 'update_size'):
@@ -732,10 +922,15 @@ class PlaylistPanel(QWidget):
         # Calculate required height for all content (playlists + add button)
         total_items = total_items_with_add
         rows = (total_items + columns - 1) // columns if total_items > 0 else 1
-        content_height = (rows * self.ITEM_HEIGHT) + 40 if total_items > 0 else 80
-        
-        # Panel height is the minimum of content height and max allowed height
-        target_height = min(content_height, max_panel_height)
+        content_height = (rows * self.ITEM_HEIGHT) + max(0, rows - 1) * self.GRID_SPACING
+
+        vertical_padding = self.layout.contentsMargins().top() + self.layout.contentsMargins().bottom()
+        max_viewport_height = max(1, max_panel_height - vertical_padding)
+        row_stride = self.ITEM_HEIGHT + self.GRID_SPACING
+        max_visible_rows = max(1, (max_viewport_height + self.GRID_SPACING) // row_stride)
+        visible_rows = min(rows, max_visible_rows)
+        viewport_height = (visible_rows * self.ITEM_HEIGHT) + max(0, visible_rows - 1) * self.GRID_SPACING
+        target_height = viewport_height + vertical_padding
         
         # Calculate width based on columns
         if total_items > 0:
@@ -746,11 +941,16 @@ class PlaylistPanel(QWidget):
             self.playlist_container.setFixedWidth(self.PANEL_WIDTH)
             target_width = self.PANEL_WIDTH
         
-        # Set container height for scrolling
+        # Set container/viewport heights for clean full-row clipping
         self.playlist_container.setMinimumHeight(content_height)
+        self.playlist_container.setFixedHeight(content_height)
+        self.scroll_area.setFixedHeight(viewport_height)
+        self._scroll_step = row_stride
 
         self.setFixedWidth(target_width)
         self.setFixedHeight(target_height)
+        self._position_scroll_hints()
+        self._update_scroll_hints()
         
         # Trigger overlay size update if parent is overlay
         if hasattr(self.parent(), 'update_size'):
@@ -801,6 +1001,7 @@ class PlaylistPanel(QWidget):
         self.playlist_container.updateGeometry()
         self.updateGeometry()
         QApplication.processEvents()
+        self._update_scroll_hints()
         
         # Update overlay size to accommodate the new panel size
         if hasattr(self.parent(), 'update_size'):

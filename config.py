@@ -14,4 +14,4 @@ GITHUB_REPO = "Dynamic-Player"
 GITHUB_TOKEN = "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"
 
 # --- NEW: App Version ---
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"

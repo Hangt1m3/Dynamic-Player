@@ -221,7 +221,7 @@ class NotificationWidget(QWidget):
     
     def __init__(self):
         super().__init__(None)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         
@@ -275,6 +275,16 @@ class NotificationWidget(QWidget):
         self._pending_anim = None
         self._stay_duration = 4000
         self._permanent = False
+        self._obs_source_compatible = True
+
+        if self._obs_source_compatible:
+            self.setWindowOpacity(0.0)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def _set_virtual_hidden_state(self):
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setWindowOpacity(0.0)
+        self.content_widget.move(0, 0)
 
     def set_zoom(self, scale):
         self._scale = scale
@@ -289,7 +299,7 @@ class NotificationWidget(QWidget):
         self.content_widget.layout().setContentsMargins(m, m, m, m)
         self.content_widget.layout().setSpacing(m)
 
-    def update_style(self, bg_color, text_color, font_family, font_style, border_enabled=False, border_color=None, notif_opacity=230, notif_border_enabled=False, notif_border_color=None, border_size=3):
+    def update_style(self, bg_color, text_color, font_family, font_style, border_enabled=False, border_color=None, notif_opacity=230, notif_border_enabled=False, notif_border_color=None, border_size=3, title_gradient_enabled=False, title_gradient_color="#FFFFFF", title_gradient_direction="Left to Right"):
         self.content_widget.bg_color = bg_color
         self.content_widget.bg_opacity = notif_opacity
         self.content_widget.border_enabled = notif_border_enabled
@@ -307,6 +317,8 @@ class NotificationWidget(QWidget):
         self.artist_label.setFont(artist_font)
         self.title_label.setTextColor(text_color)
         self.artist_label.setTextColor(text_color)
+        self.title_label.setGradient(title_gradient_enabled, QColor(title_gradient_color), title_gradient_direction)
+        self.artist_label.setGradient(title_gradient_enabled, QColor(title_gradient_color), title_gradient_direction)
         self.title_label.setBorder(border_enabled, border_color, border_size)
         self.artist_label.setBorder(border_enabled, border_color, border_size)
         
@@ -317,9 +329,10 @@ class NotificationWidget(QWidget):
         self.art_label.setVisible(has_art)
         
         if not has_art:
-            self.title_label.setStandardPainting(True)
-            self.artist_label.setStandardPainting(True)
-            self.artist_label.setWordWrap(True)
+            self.title_label.setStandardPainting(False)
+            self.artist_label.setStandardPainting(False)
+            self.title_label.setMaxLines(2)
+            self.artist_label.setMaxLines(2)
             
             fm_title = QFontMetrics(self.title_label.font())
             fm_artist = QFontMetrics(self.artist_label.font())
@@ -337,7 +350,8 @@ class NotificationWidget(QWidget):
         else:
             self.title_label.setStandardPainting(False)
             self.artist_label.setStandardPainting(False)
-            self.artist_label.setWordWrap(False)
+            self.title_label.setMaxLines(1)
+            self.artist_label.setMaxLines(1)
             
             w = int(350 * self._scale)
             h = int(90 * self._scale)
@@ -405,8 +419,10 @@ class NotificationWidget(QWidget):
         self._stay_duration = duration
         self._permanent = permanent
         
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self.move(screen_pos)
         self.raise_()
+        self.show()
         self.pos_anim.stop()
         self.opacity_anim.stop()
         
@@ -460,8 +476,6 @@ class NotificationWidget(QWidget):
 
         if main_anim:
             main_anim.finished.connect(self._on_anim_finished)
-
-        self.show()
 
     def fade_out(self):
         self._is_fading_out = True
@@ -518,7 +532,10 @@ class NotificationWidget(QWidget):
     def _on_anim_finished(self):
         if self._is_fading_out:
              # Exit animation finished
-             self.hide()
+             if self._obs_source_compatible:
+                 self._set_virtual_hidden_state()
+             else:
+                 self.hide()
              if self._pending_transition:
                  self._apply_pending_and_show()
         else:

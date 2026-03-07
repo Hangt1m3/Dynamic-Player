@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                              QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit, 
                              QApplication, QAbstractButton)
 from PyQt5.QtGui import (QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, 
-                         QGuiApplication, QPixmap, QImage)
+                         QGuiApplication, QPixmap, QImage, QKeySequence)
 
 from ui.styles import get_common_stylesheet
 from ui.widgets import (BorderedLabel, LabelBorderEventFilter, ColorPreviewLabel, 
@@ -24,7 +24,7 @@ from ui.overlays import NotificationWidget
 from services import ColorCache
 from workers import GitHubUpdatesWorker, GoveeDeviceFinderWorker
 from utils import get_contrast_ratio, get_best_text_color, get_best_border_color, extract_palette_from_image
-from config import SPOTIPY_REDIRECT_URI, GITHUB_TOKEN
+from config import SPOTIPY_REDIRECT_URI, GITHUB_TOKEN, LAVA_LAMP_PRESET
 
 class ThemedDialog(QDialog):
     # Copy the ThemedDialog implementation from original code
@@ -44,6 +44,15 @@ class ThemedDialog(QDialog):
         title_layout.addWidget(self.title_label); title_layout.addStretch(); title_layout.addWidget(self.close_btn)
         self._main_layout.addWidget(self.title_bar); self.content_widget = QWidget(); self.content_layout = QVBoxLayout(self.content_widget); self.content_layout.setContentsMargins(20, 10, 20, 20); self._main_layout.addWidget(self.content_widget)
         self.apply_theme()
+    def _apply_button_focus_policy(self):
+        # Prevent Tab key from cycling to buttons in modal menus.
+        for btn in self.findChildren(QPushButton):
+            btn.setFocusPolicy(Qt.ClickFocus)
+
+    def showEvent(self, event):
+        self._apply_button_focus_policy()
+        super().showEvent(event)
+
     def apply_theme(self): self.setStyleSheet(get_common_stylesheet(self.bg_color, self.text_color, self.accent_color)); self.update()
     def paintEvent(self, event):
         if self.isMinimized(): return
@@ -565,6 +574,11 @@ class ColorEditorDialog(QDialog):
         cached_font_size = cached_data.get("font_size_scale")
         self.is_font_size_overridden = cached_font_size is not None
         font_size_scale = cached_font_size if self.is_font_size_overridden else main_window_state._current_font_size_scale
+        album_art_border_enabled = cached_data.get("album_art_border_enabled", True)
+        self.title_gradient_enabled = bool(cached_data.get("title_gradient_enabled", False))
+        title_gradient_color_rgb = cached_data.get("title_gradient_color", [255, 255, 255])
+        self.title_gradient_color = QColor(*title_gradient_color_rgb)
+        self.title_gradient_direction = str(cached_data.get("title_gradient_direction", "Left to Right"))
         
         text_border_enabled = cached_data.get("text_border_enabled", main_window_state._current_text_border_enabled)
         text_border_color_rgb = cached_data.get("text_border_color")
@@ -584,7 +598,14 @@ class ColorEditorDialog(QDialog):
         
         self.initial_font_family = font_family
         self.initial_font_style = font_style
+        self.custom_art_scope = "track"
         self.custom_art_b64 = track_cache.get("custom_art_b64")
+        if not self.custom_art_b64:
+            self.custom_art_b64 = (self.color_cache.get_album_data(self.album_id) or {}).get("custom_art_b64")
+            if self.custom_art_b64:
+                self.custom_art_scope = "album"
+        self.initial_custom_art_scope = self.custom_art_scope
+        self._custom_art_changed = False
 
         # Store initial credentials to check for changes on save
         self.initial_spotify_id = settings.value("spotify_client_id", "")
@@ -595,6 +616,23 @@ class ColorEditorDialog(QDialog):
         self.initial_apple_music_private_key = settings.value("apple_music_private_key", "")
         self.initial_apple_music_user_token = settings.value("apple_music_user_token", "")
         self.initial_govee_devices = json.loads(settings.value("govee_devices", "[]"))
+
+        if hasattr(main_window_state, 'get_shortcut_definitions'):
+            self.shortcut_definitions = main_window_state.get_shortcut_definitions()
+        else:
+            self.shortcut_definitions = []
+
+        if hasattr(main_window_state, 'get_shortcut_bindings'):
+            parent_shortcuts = main_window_state.get_shortcut_bindings()
+        else:
+            parent_shortcuts = {}
+
+        self.shortcut_bindings = self._normalize_shortcut_bindings(parent_shortcuts)
+        self.initial_shortcut_bindings = dict(self.shortcut_bindings)
+        self._shortcut_capture_action_id = None
+        self._shortcut_capture_button = None
+        self.shortcut_buttons = {}
+        self.shortcut_status_label = None
         
         self.initial_default_govee_brightness = int(main_window_state.default_govee_brightness * 100)
         
@@ -638,6 +676,10 @@ class ColorEditorDialog(QDialog):
         self.initial_text_border_color = QColor(self.text_border_color)
         self.initial_is_border_size_overridden = self.is_border_size_overridden
         self.initial_text_border_size = text_border_size
+        self.initial_album_art_border_enabled = album_art_border_enabled
+        self.initial_title_gradient_enabled = self.title_gradient_enabled
+        self.initial_title_gradient_color = QColor(self.title_gradient_color)
+        self.initial_title_gradient_direction = self.title_gradient_direction
         self.initial_is_font_size_overridden = self.is_font_size_overridden
         self.initial_font_size_scale = font_size_scale
         self.initial_is_progress_bar_overridden = self.is_progress_bar_overridden
@@ -695,13 +737,17 @@ class ColorEditorDialog(QDialog):
 
     def _on_tab_changed(self, index):
         """Refreshes the theme browser whenever the user switches to that tab."""
-        if self.tab_widget.tabText(index) == "Saved Themes":
+        if self.tab_widget.tabText(index) == "Theme Library":
             self.populate_theme_browser()
 
     def _install_filter_recursive(self, widget):
         """Installs the border event filter on the widget and all its children."""
         if isinstance(widget, (QLabel, QAbstractButton, QGroupBox)):
             widget.installEventFilter(self.ui_event_filter)
+
+        if isinstance(widget, QPushButton):
+            # Keep button focus on click only so Tab can be captured for shortcut binding.
+            widget.setFocusPolicy(Qt.ClickFocus)
         
         for child in widget.children():
             if isinstance(child, QWidget):
@@ -757,7 +803,7 @@ class ColorEditorDialog(QDialog):
 
         yield # Yield after basic container setup
 
-        # --- Tab 1: Current Theme (Visuals for this album) ---
+        # --- Tab 1: Track Theme (visuals for this track/album) ---
         theme_tab = QWidget()
         theme_tab_layout = QVBoxLayout(theme_tab)
         theme_tab_layout.setContentsMargins(0, 0, 5, 0) # Add padding for the scrollbar
@@ -775,7 +821,7 @@ class ColorEditorDialog(QDialog):
         self.settings_grid_layout.setSpacing(15)
         
         theme_tab_layout.addWidget(scroll_area)
-        self.tab_widget.addTab(theme_tab, "Current Theme")
+        self.tab_widget.addTab(theme_tab, "Track Theme")
 
         self.settings_col_1 = QVBoxLayout(); self.settings_col_1.setAlignment(Qt.AlignTop)
         self.settings_col_2 = QVBoxLayout(); self.settings_col_2.setAlignment(Qt.AlignTop)
@@ -784,11 +830,11 @@ class ColorEditorDialog(QDialog):
         self.settings_col_1.insertWidget(0, self.disabled_info_label)
 
         theme_actions_layout = QHBoxLayout()
-        regenerate_btn = QPushButton("Regenerate Theme from Art")
+        regenerate_btn = QPushButton("Rebuild Auto Theme from Artwork")
         regenerate_btn.setToolTip("Re-detect colors for auto-set fields based on current art.")
         regenerate_btn.clicked.connect(self.regenerate_theme)
         
-        reset_theme_btn = QPushButton("Reset Theme")
+        reset_theme_btn = QPushButton("Reset Track Theme")
         reset_theme_btn.setToolTip("Reset all colors to auto-detected defaults.")
         reset_theme_btn.clicked.connect(self.reset_theme_to_auto)
         
@@ -818,12 +864,12 @@ class ColorEditorDialog(QDialog):
         self.tab_widget.addTab(notif_tab, "Notifications")
 
         # Enable Switch
-        self.notification_enabled_checkbox = QCheckBox("Enable Track Change Notifications")
+        self.notification_enabled_checkbox = QCheckBox("Enable Now Playing Notifications")
         self.notification_enabled_checkbox.setChecked(settings.value("notification_enabled", "false") == "true")
         notif_layout.addWidget(self.notification_enabled_checkbox)
 
         # Behavior Group
-        notification_group = QGroupBox("Behavior & Position")
+        notification_group = QGroupBox("Placement & Behavior")
         notification_layout = QFormLayout(notification_group)
         notification_layout.setSpacing(12)
         notif_layout.addWidget(notification_group)
@@ -842,20 +888,20 @@ class ColorEditorDialog(QDialog):
         self.notification_corner_combo.addItems(["Top-Left", "Top-Center", "Top-Right", "Bottom-Left", "Bottom-Center", "Bottom-Right"])
         self.notification_corner_combo.setCurrentText(settings.value("notification_corner", "Top-Right"))
 
-        self.notif_smart_hide_checkbox = QCheckBox("Smart Hide")
+        self.notif_smart_hide_checkbox = QCheckBox("Smart Hide When Player Is Visible")
         self.notif_smart_hide_checkbox.setToolTip("Hides notification if player is visible on the same screen.")
         self.notif_smart_hide_checkbox.setChecked(settings.value("notification_smart_hide", "false") == "true")
         
-        self.notif_ignore_taskbar_checkbox = QCheckBox("Ignore Taskbar (Position at Screen Edge)")
+        self.notif_ignore_taskbar_checkbox = QCheckBox("Ignore Taskbar Area (Use Screen Edge)")
         self.notif_ignore_taskbar_checkbox.setChecked(settings.value("notification_ignore_taskbar", "true") == "true")
 
-        notification_layout.addRow(self._create_label("Monitor:"), self.notification_monitor_combo)
-        notification_layout.addRow(self._create_label("Corner:"), self.notification_corner_combo)
+        notification_layout.addRow(self._create_label("Display:"), self.notification_monitor_combo)
+        notification_layout.addRow(self._create_label("Position:"), self.notification_corner_combo)
         notification_layout.addRow(self.notif_smart_hide_checkbox)
         notification_layout.addRow(self.notif_ignore_taskbar_checkbox)
 
         # Appearance Group
-        notif_style_group = QGroupBox("Appearance & Animation")
+        notif_style_group = QGroupBox("Appearance & Timing")
         notif_style_layout = QFormLayout(notif_style_group)
         notif_layout.addWidget(notif_style_group)
 
@@ -876,7 +922,7 @@ class ColorEditorDialog(QDialog):
         self.notif_opacity_slider.valueChanged.connect(lambda v: self.notif_opacity_label.setText(f"{int(v/2.55)}%"))
         opacity_layout = QHBoxLayout(); opacity_layout.addWidget(self.notif_opacity_slider); opacity_layout.addWidget(self.notif_opacity_label)
 
-        self.notif_border_checkbox = QCheckBox("Show Border")
+        self.notif_border_checkbox = QCheckBox("Show Notification Border")
         self.notif_border_checkbox.setChecked(settings.value("notification_border_enabled", "false") == "true")
 
         self.notification_anim_combo = NoScrollComboBox()
@@ -889,7 +935,7 @@ class ColorEditorDialog(QDialog):
         
         self.notification_anim_combo.currentTextChanged.connect(self._update_notification_options)
 
-        self.notif_permanent_checkbox = QCheckBox("Stay for Song Duration")
+        self.notif_permanent_checkbox = QCheckBox("Keep Visible for Full Song")
         self.notif_permanent_checkbox.setToolTip("If checked, the notification will stay visible for the entire song and transition when the track changes.")
         self.notif_permanent_checkbox.setChecked(settings.value("notification_permanent", "false") == "true")
 
@@ -915,13 +961,13 @@ class ColorEditorDialog(QDialog):
         anim_speed_layout = QHBoxLayout(); anim_speed_layout.addWidget(self.notif_anim_speed_slider); anim_speed_layout.addWidget(self.notif_anim_speed_label)
 
         notif_style_layout.addRow(self._create_label("Size:"), notif_size_layout)
-        notif_style_layout.addRow(self._create_label("BG Opacity:"), opacity_layout)
+        notif_style_layout.addRow(self._create_label("Background Opacity:"), opacity_layout)
         notif_style_layout.addRow(self.notif_border_checkbox)
-        notif_style_layout.addRow(self._create_label("Animation:"), self.notification_anim_combo)
-        notif_style_layout.addRow(self._create_label("Direction:"), self.notification_dir_combo)
+        notif_style_layout.addRow(self._create_label("Animation Style:"), self.notification_anim_combo)
+        notif_style_layout.addRow(self._create_label("Slide Direction:"), self.notification_dir_combo)
         notif_style_layout.addRow(self.notif_permanent_checkbox)
-        notif_style_layout.addRow(self._create_label("Duration:"), duration_layout)
-        notif_style_layout.addRow(self._create_label("Anim Speed:"), anim_speed_layout)
+        notif_style_layout.addRow(self._create_label("Visible For:"), duration_layout)
+        notif_style_layout.addRow(self._create_label("Transition Speed:"), anim_speed_layout)
         
         notif_layout.addStretch()
 
@@ -929,7 +975,7 @@ class ColorEditorDialog(QDialog):
 
         yield # Yield after Tab 2 setup
 
-        # --- Tab 3: Global Settings ---
+        # --- Tab 3: App Defaults ---
         global_tab = QWidget()
         global_tab_layout = QVBoxLayout(global_tab)
         global_tab_layout.setContentsMargins(0, 0, 5, 0)
@@ -946,10 +992,10 @@ class ColorEditorDialog(QDialog):
         global_layout.setContentsMargins(15, 15, 15, 15)
         global_layout.setSpacing(12)
         global_tab_layout.addWidget(global_scroll)
-        self.tab_widget.addTab(global_tab, "Global Settings")
+        self.tab_widget.addTab(global_tab, "App Defaults")
 
         # Default Typography Group
-        default_text_group = QGroupBox("Default Typography (Fallback)")
+        default_text_group = QGroupBox("Default Text Style")
         default_text_layout = QFormLayout(default_text_group)
         default_text_layout.setSpacing(12)
         global_layout.addWidget(default_text_group)
@@ -978,10 +1024,10 @@ class ColorEditorDialog(QDialog):
         
         default_size_layout = QHBoxLayout(); default_size_layout.addWidget(self.default_font_size_slider); default_size_layout.addWidget(self.default_font_size_label)
 
-        default_text_layout.addRow(self._create_label("Font:"), self.default_font_family_combo); default_text_layout.addRow(self._create_label("Style:"), self.default_font_style_combo)
-        default_text_layout.addRow(self._create_label("Size:"), default_size_layout)
+        default_text_layout.addRow(self._create_label("Font Family:"), self.default_font_family_combo); default_text_layout.addRow(self._create_label("Font Style:"), self.default_font_style_combo)
+        default_text_layout.addRow(self._create_label("Font Size:"), default_size_layout)
         
-        self.default_text_border_checkbox = QCheckBox("Always Show Text Border by Default")
+        self.default_text_border_checkbox = QCheckBox("Show Text Outline by Default")
         self.default_text_border_checkbox.setToolTip("If checked, borders will be shown on all tracks unless manually disabled.\nIf unchecked, borders will only appear when text contrast is low (Auto).")
         self.default_text_border_checkbox.setChecked(self.initial_default_text_border_enabled)
         default_text_layout.addRow(self.default_text_border_checkbox)
@@ -991,13 +1037,13 @@ class ColorEditorDialog(QDialog):
         self.default_text_border_size_slider.valueChanged.connect(lambda v: (self.default_text_border_size_label.setText(f"{v}px"), self.update_previews()))
         default_border_size_layout = QHBoxLayout(); default_border_size_layout.addWidget(self.default_text_border_size_slider); default_border_size_layout.addWidget(self.default_text_border_size_label)
         
-        default_text_layout.addRow(self._create_label("Border Size:"), default_border_size_layout)
+        default_text_layout.addRow(self._create_label("Outline Size:"), default_border_size_layout)
 
-        # Global Visuals Group
-        global_visuals_group = QGroupBox("Global Visuals")
-        global_visuals_layout = QFormLayout(global_visuals_group)
-        global_visuals_layout.setSpacing(12)
-        global_layout.addWidget(global_visuals_group)
+        # Visual Effects Group
+        visual_effects_group = QGroupBox("Visual Effects")
+        visual_effects_layout = QFormLayout(visual_effects_group)
+        visual_effects_layout.setSpacing(12)
+        global_layout.addWidget(visual_effects_group)
 
         self.blob_amount_slider = QSlider(Qt.Horizontal)
         self.blob_amount_slider.setRange(1, 10)
@@ -1012,11 +1058,47 @@ class ColorEditorDialog(QDialog):
         amount_layout.addWidget(self._create_dynamic_label("Less"))
         amount_layout.addWidget(self.blob_amount_slider)
         amount_layout.addWidget(self._create_dynamic_label("More"))
-        global_visuals_layout.addRow(self._create_label("Blob Density:"), amount_widget)
+        visual_effects_layout.addRow(self._create_label("Background Motion Amount:"), amount_widget)
 
-        self.default_progress_bar_checkbox = QCheckBox("Enable Progress Bar by Default")
+        self.lava_preset_combo = NoScrollComboBox()
+        self.lava_preset_combo.addItem("Ultra Soft", "ultra_soft")
+        self.lava_preset_combo.addItem("Balanced", "balanced")
+        self.lava_preset_combo.addItem("Color Pop", "color_pop")
+        saved_lava_preset = str(settings.value("lava_lamp_preset", LAVA_LAMP_PRESET)).strip().lower()
+        preset_idx = self.lava_preset_combo.findData(saved_lava_preset)
+        self.lava_preset_combo.setCurrentIndex(preset_idx if preset_idx >= 0 else 1)
+        self.lava_preset_combo.setToolTip("Controls the style of the OpenGL lava-lamp background.")
+        visual_effects_layout.addRow(self._create_label("Lava Lamp Style:"), self.lava_preset_combo)
+
+        self.default_progress_bar_checkbox = QCheckBox("Show Progress Bar by Default")
         self.default_progress_bar_checkbox.setChecked(self.initial_default_progress_bar_enabled)
-        global_visuals_layout.addRow(self.default_progress_bar_checkbox)
+        visual_effects_layout.addRow(self.default_progress_bar_checkbox)
+
+        # Layout & Window Behavior
+        behavior_group = QGroupBox("Window & Layout")
+        behavior_layout = QFormLayout(behavior_group)
+        behavior_layout.setSpacing(12)
+        global_layout.addWidget(behavior_group)
+
+        self.minimize_mode_checkbox = QCheckBox("Minimize Button Enters Notification-Only Mode")
+        self.minimize_mode_checkbox.setChecked(settings.value("minimize_to_notification_only", "true") == "true")
+        self.minimize_mode_checkbox.setToolTip(
+            "ON: the custom minimize button hides the player and enters notification-only mode.\n"
+            "OFF: the custom minimize button does a normal window minimize."
+        )
+        behavior_layout.addRow(self.minimize_mode_checkbox)
+
+        self.player_art_side_combo = NoScrollComboBox()
+        self.player_art_side_combo.addItems(["Left", "Right"])
+        saved_art_side = str(settings.value("player_art_side", "left")).strip().lower()
+        self.player_art_side_combo.setCurrentText("Right" if saved_art_side == "right" else "Left")
+        behavior_layout.addRow(self._create_label("Album Art Side:"), self.player_art_side_combo)
+
+        # Smart Lights Defaults
+        lights_defaults_group = QGroupBox("Smart Lights Defaults")
+        lights_defaults_layout = QFormLayout(lights_defaults_group)
+        lights_defaults_layout.setSpacing(12)
+        global_layout.addWidget(lights_defaults_group)
         
         self.default_brightness_slider = QSlider(Qt.Horizontal)
         self.default_brightness_slider.setRange(0, 100)
@@ -1025,10 +1107,10 @@ class ColorEditorDialog(QDialog):
         self.default_brightness_slider.valueChanged.connect(self._on_default_brightness_changed)
         def_bright_layout = QHBoxLayout()
         def_bright_layout.addWidget(self.default_brightness_slider); def_bright_layout.addWidget(self.default_brightness_label)
-        global_visuals_layout.addRow(self._create_label("Default Brightness:"), def_bright_layout)
+        lights_defaults_layout.addRow(self._create_label("Default Brightness:"), def_bright_layout)
 
         # --- NEW: Mobile App Brightness Override ---
-        self.govee_override_checkbox = QCheckBox("Mobile App Brightness Override")
+        self.govee_override_checkbox = QCheckBox("Let Govee Mobile App Control Brightness")
         self.govee_override_checkbox.setToolTip("If enabled, the desktop app will ONLY control colors. Brightness is left to the Govee app.")
         # Load value (defaulting to False)
         settings = QSettings("SpotifySync", "App")
@@ -1038,7 +1120,13 @@ class ColorEditorDialog(QDialog):
         self.govee_override_checkbox.toggled.connect(lambda c: self.default_brightness_slider.setDisabled(c))
         self.default_brightness_slider.setDisabled(is_override_on)
         
-        global_visuals_layout.addRow(self.govee_override_checkbox)
+        lights_defaults_layout.addRow(self.govee_override_checkbox)
+
+        # Sound Effects
+        sound_group = QGroupBox("Sound Effects")
+        sound_layout_form = QFormLayout(sound_group)
+        sound_layout_form.setSpacing(12)
+        global_layout.addWidget(sound_group)
 
         # --- NEW: Sound Volume Slider ---
         self.sound_volume_slider = QSlider(Qt.Horizontal)
@@ -1054,25 +1142,17 @@ class ColorEditorDialog(QDialog):
         sound_layout = QHBoxLayout()
         sound_layout.addWidget(self.sound_volume_slider)
         sound_layout.addWidget(self.sound_volume_label)
-        global_visuals_layout.addRow(self._create_label("Sound Volume:"), sound_layout)
-
-        self.minimize_mode_checkbox = QCheckBox("Window button uses Notification-only mode")
-        self.minimize_mode_checkbox.setChecked(settings.value("minimize_to_notification_only", "true") == "true")
-        self.minimize_mode_checkbox.setToolTip(
-            "ON: the custom minimize button hides the player and enters notification-only mode.\n"
-            "OFF: the custom minimize button does a normal window minimize."
-        )
-        global_visuals_layout.addRow(self.minimize_mode_checkbox)
+        sound_layout_form.addRow(self._create_label("Volume:"), sound_layout)
 
         # Data Management Group
         data_group = QGroupBox("Maintenance")
         data_layout = QVBoxLayout(data_group)
         data_layout.setContentsMargins(15, 15, 15, 15)
-        self.clear_cache_btn = QPushButton("Clear Album Cache")
+        self.clear_cache_btn = QPushButton("Clear Theme Cache")
         self.clear_cache_btn.clicked.connect(self.confirm_clear_cache)
         data_layout.addWidget(self.clear_cache_btn)
         
-        self.reset_app_btn = QPushButton("Reset Application")
+        self.reset_app_btn = QPushButton("Reset Application Setup")
         self.reset_app_btn.clicked.connect(self.confirm_reset_app)
         data_layout.addWidget(self.reset_app_btn)
         
@@ -1084,7 +1164,7 @@ class ColorEditorDialog(QDialog):
 
         yield from self._setup_theme_browser_tab()
 
-        # --- Tab 4: API & Devices ---
+        # --- Tab 4: Connections ---
         credentials_tab = QWidget()
         credentials_tab_layout = QVBoxLayout(credentials_tab)
         credentials_tab_layout.setContentsMargins(0, 0, 5, 0)
@@ -1101,9 +1181,9 @@ class ColorEditorDialog(QDialog):
         credentials_layout.setContentsMargins(15, 15, 15, 15)
         credentials_layout.setSpacing(12)
         credentials_tab_layout.addWidget(credentials_scroll)
-        self.tab_widget.addTab(credentials_tab, "API & Devices")
+        self.tab_widget.addTab(credentials_tab, "Connections")
 
-        spotify_group = QGroupBox("Spotify API")
+        spotify_group = QGroupBox("Spotify Connection")
         spotify_layout = QFormLayout(spotify_group)
         spotify_layout.setSpacing(12)
         self.spotify_id_input = QLineEdit(self.initial_spotify_id)
@@ -1114,7 +1194,7 @@ class ColorEditorDialog(QDialog):
         spotify_layout.addRow(self._create_label("Client Secret:"), self.spotify_secret_input)
         credentials_layout.addWidget(spotify_group)
 
-        apple_music_group = QGroupBox("Apple Music API")
+        apple_music_group = QGroupBox("Apple Music Connection")
         apple_music_layout = QFormLayout(apple_music_group)
         apple_music_layout.setSpacing(12)
         self.apple_music_team_id_input = QLineEdit(self.initial_apple_music_team_id)
@@ -1141,7 +1221,7 @@ class ColorEditorDialog(QDialog):
         apple_music_layout.addRow(self._create_label("User Token (Optional):"), self.apple_music_user_token_input)
         credentials_layout.addWidget(apple_music_group)
 
-        govee_cred_group = QGroupBox("Govee API & Devices")
+        govee_cred_group = QGroupBox("Govee Lights")
         govee_cred_layout = QVBoxLayout(govee_cred_group)
         govee_api_layout = QHBoxLayout()
         self.govee_key_input = QLineEdit(self.initial_govee_key)
@@ -1152,28 +1232,28 @@ class ColorEditorDialog(QDialog):
         govee_api_layout.addWidget(self.find_govee_button)
         govee_cred_layout.addLayout(govee_api_layout)
 
-        self.govee_status_label = self._create_dynamic_label("Enter your API key and click 'Find Devices' to manage your lights.", is_html_or_wrapped=True)
+        self.govee_status_label = self._create_dynamic_label("Enter your Govee API key, then click 'Find Devices' to choose the lights this app controls.", is_html_or_wrapped=True)
         self.govee_status_label.setWordWrap(True)
         govee_cred_layout.addWidget(self.govee_status_label)
 
         self.govee_device_table = QTableWidget()
         self.govee_device_table.setColumnCount(4)
-        self.govee_device_table.setHorizontalHeaderLabels(["Enabled", "Device ID", "Model", "Light Name"])
+        self.govee_device_table.setHorizontalHeaderLabels(["Use", "Device ID", "Model", "Display Name"])
         self.govee_device_table.horizontalHeader().setStretchLastSection(True)
         self.govee_device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         govee_cred_layout.addWidget(self.govee_device_table)
         credentials_layout.addWidget(govee_cred_group)
 
-        show_hide_button = QPushButton("Show Credentials")
+        show_hide_button = QPushButton("Show Secrets")
         show_hide_button.setCheckable(True)
-        show_hide_button.setToolTip("Toggle the visibility of your API keys.")
+        show_hide_button.setToolTip("Show or hide API keys and tokens.")
         show_hide_button.toggled.connect(self.toggle_credential_visibility)
         credentials_layout.addWidget(show_hide_button, 0, Qt.AlignRight)
         credentials_layout.addStretch()
 
         yield # Yield after Tab 4 setup
 
-        # --- Tab 5: Shortcuts (FIXED LAYOUT) ---
+        # --- Tab 5: Keyboard Shortcuts ---
         controls_tab = QWidget()
         controls_tab_layout = QVBoxLayout(controls_tab)
         controls_tab_layout.setContentsMargins(0, 0, 5, 0)
@@ -1194,35 +1274,54 @@ class ColorEditorDialog(QDialog):
         controls_layout.setColumnStretch(1, 1) # Allow description to stretch
         
         controls_tab_layout.addWidget(controls_scroll)
-        self.tab_widget.addTab(controls_tab, "Shortcuts")
+        self.tab_widget.addTab(controls_tab, "Keyboard Shortcuts")
 
-        controls = [
-            ("F", "Toggle fullscreen mode."),
-            ("F11", "Toggle multi-monitor spanning mode."),
-            ("F12", "Toggle wallpaper mode (places behind icons)."),
-            ("L", "Toggle Govee light synchronization."),
-            ("C", "Open this settings panel."),
-            ("← / →", "Shift player to adjacent monitor."),
-            ("Esc", "Close the application.")
-        ]
+        controls_layout.setColumnStretch(0, 0)
+        controls_layout.setColumnStretch(1, 0)
+        controls_layout.setColumnStretch(2, 1)
 
-        row = 0
-        for key, desc in controls:
-            key_label = self._create_dynamic_label(f"<b>{key}</b>", is_html_or_wrapped=True)
-            key_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            key_label.setFixedWidth(100)  # Increased width for better visibility
-            key_label.setMinimumHeight(32)  # Better vertical spacing
-            
-            desc_label = self._create_dynamic_label(desc, is_html_or_wrapped=True)
+        help_label = self._create_dynamic_label(
+            "Click a key button, press a key to remap, or clear an action to leave it unassigned.",
+            is_html_or_wrapped=True
+        )
+        help_label.setWordWrap(True)
+        controls_layout.addWidget(help_label, 0, 0, 1, 3)
+
+        reset_shortcuts_btn = QPushButton("Reset All Shortcuts to Defaults")
+        reset_shortcuts_btn.setToolTip("Restore all shortcut bindings to their default values")
+        reset_shortcuts_btn.clicked.connect(self._reset_shortcuts_to_defaults)
+        controls_layout.addWidget(reset_shortcuts_btn, 1, 0, 1, 3)
+
+        row = 2
+        for definition in self.shortcut_definitions:
+            action_id = definition.get("id", "")
+            action_label = self._create_dynamic_label(f"<b>{definition.get('label', action_id)}</b>", is_html_or_wrapped=True)
+            action_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            action_label.setFixedWidth(180)
+            controls_layout.addWidget(action_label, row, 0)
+
+            key_button = QPushButton(self._shortcut_display_text(action_id))
+            key_button.setToolTip("Left-click to assign. Right-click to clear.")
+            key_button.clicked.connect(lambda checked=False, aid=action_id: self._on_shortcut_button_clicked(aid))
+            key_button.setContextMenuPolicy(Qt.CustomContextMenu)
+            key_button.customContextMenuRequested.connect(
+                lambda pos, aid=action_id: self._clear_shortcut_binding(aid)
+            )
+            key_button.setMinimumWidth(120)
+            controls_layout.addWidget(key_button, row, 1)
+            self.shortcut_buttons[action_id] = key_button
+
+            desc_text = definition.get("description", "")
+            desc_label = self._create_dynamic_label(desc_text, is_html_or_wrapped=True)
             desc_label.setWordWrap(True)
             desc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            desc_label.setMinimumHeight(32)  # Better vertical spacing
-            
-            controls_layout.addWidget(key_label, row, 0)
-            controls_layout.addWidget(desc_label, row, 1)
+            controls_layout.addWidget(desc_label, row, 2)
             row += 1
-            
-        controls_layout.setRowStretch(row, 1) # Push content up
+
+        self.shortcut_status_label = self._create_dynamic_label("", is_html_or_wrapped=True)
+        self.shortcut_status_label.setWordWrap(True)
+        controls_layout.addWidget(self.shortcut_status_label, row, 0, 1, 3)
+        controls_layout.setRowStretch(row + 1, 1)
 
         yield
 
@@ -1235,29 +1334,50 @@ class ColorEditorDialog(QDialog):
         self.updates_browser.setObjectName("updatesBrowser")
         self.updates_browser.setOpenExternalLinks(True)
         updates_layout.addWidget(self.updates_browser)
-        self.tab_widget.addTab(updates_tab, "Updates")
+        self.tab_widget.addTab(updates_tab, "App Updates")
 
         yield # Yield after Tab 6 setup
 
         # --- Typography Group (Current Theme) ---
-        text_group = QGroupBox("Typography")
+        text_group = QGroupBox("Text & Typography")
         text_layout = QFormLayout(text_group)
         text_layout.setSpacing(12)
         self.text_preview, self.pick_text_btn, self.reset_text_btn = self._create_color_picker(self.ui_text_color, self.pick_text_color, self.reset_text_color, is_text=True)
         text_layout.addRow(self._create_label("Text Color:"), self.create_color_row(self.text_preview, self.pick_text_btn, self.reset_text_btn))
+        self.title_gradient_checkbox = QCheckBox("Use Gradient Song Title")
+        self.title_gradient_checkbox.setChecked(self.title_gradient_enabled)
+        self.title_grad_preview, self.title_grad_pick_btn, _ = self._create_color_picker(
+            self.title_gradient_color,
+            self.pick_player_title_gradient_color,
+            is_text=True
+        )
+        self.title_gradient_dir_combo = NoScrollComboBox()
+        self.title_gradient_dir_combo.addItems([
+            "Left to Right",
+            "Top to Bottom",
+            "Top-Left to Bottom-Right",
+            "Bottom-Left to Top-Right"
+        ])
+        self.title_gradient_dir_combo.setCurrentText(self.title_gradient_direction)
+        self.title_grad_pick_btn.setEnabled(self.title_gradient_checkbox.isChecked())
+        self.title_grad_preview.setEnabled(self.title_gradient_checkbox.isChecked())
+        self.title_gradient_dir_combo.setEnabled(self.title_gradient_checkbox.isChecked())
+        self.title_gradient_checkbox.toggled.connect(self.title_grad_pick_btn.setEnabled)
+        self.title_gradient_checkbox.toggled.connect(self.title_grad_preview.setEnabled)
+        self.title_gradient_checkbox.toggled.connect(self.title_gradient_dir_combo.setEnabled)
+        text_layout.addRow(self.title_gradient_checkbox)
+        text_layout.addRow(self._create_label("Gradient Color:"), self.create_color_row(self.title_grad_preview, self.title_grad_pick_btn))
+        text_layout.addRow(self._create_label("Gradient Direction:"), self.title_gradient_dir_combo)
         self.text_preview_shadow = QGraphicsDropShadowEffect()
         self.text_preview.setGraphicsEffect(self.text_preview_shadow)
 
-        self.override_font_checkbox = QCheckBox("Override Default Font")
+        self.override_font_checkbox = QCheckBox("Use Custom Font for This Theme")
         self.override_font_checkbox.setChecked(self.is_font_family_overridden)
         self.override_font_checkbox.toggled.connect(self._on_override_font_toggled)
 
         self.font_family_combo = NoScrollComboBox()
         self.font_family_combo.setToolTip("Select the font family for the track title and artist.")
         self.font_family_combo.setEnabled(self.is_font_family_overridden)
-        self.font_style_combo = NoScrollComboBox()
-        self.font_style_combo.setToolTip("Select the style for the chosen font family.")
-        self.font_style_combo.setEnabled(self.is_font_family_overridden)
         
         # --- Apply Delegate to Theme Font Family ---
         self.font_family_combo.setItemDelegate(FontFamilyDelegate(self.font_family_combo))
@@ -1273,7 +1393,7 @@ class ColorEditorDialog(QDialog):
         self.font_search_input.setPlaceholderText("Search fonts...")
         self.font_search_input.setEnabled(self.is_font_family_overridden)
 
-        self.override_size_checkbox = QCheckBox("Override Default Size")
+        self.override_size_checkbox = QCheckBox("Use Custom Font Size for This Theme")
         self.override_size_checkbox.setChecked(self.is_font_size_overridden)
         self.override_size_checkbox.toggled.connect(self._on_override_size_toggled)
 
@@ -1293,7 +1413,7 @@ class ColorEditorDialog(QDialog):
         border_line.setFrameShadow(QFrame.Sunken)
         border_line.setStyleSheet("background-color: #555;")
 
-        self.text_border_checkbox = QCheckBox("Show Text Border")
+        self.text_border_checkbox = QCheckBox("Enable Text Outline")
         self.text_border_checkbox.setChecked(self.initial_text_border_enabled)
         self.text_border_checkbox.toggled.connect(self._on_text_border_toggled)
         
@@ -1321,17 +1441,17 @@ class ColorEditorDialog(QDialog):
         border_size_layout = QHBoxLayout(); border_size_layout.addWidget(self.text_border_size_slider); border_size_layout.addWidget(self.text_border_size_label)
 
         text_layout.addRow(self.override_font_checkbox)
-        text_layout.addRow(self._create_label("Search:"), self.font_search_input)
-        text_layout.addRow(self._create_label("Font:"), self.font_family_combo)
-        text_layout.addRow(self._create_label("Style:"), self.font_style_combo)
+        text_layout.addRow(self._create_label("Find Font:"), self.font_search_input)
+        text_layout.addRow(self._create_label("Font Family:"), self.font_family_combo)
+        text_layout.addRow(self._create_label("Font Style:"), self.font_style_combo)
         text_layout.addRow(self.override_size_checkbox)
         text_layout.addRow(self._create_label("Size:"), size_layout)
         text_layout.addRow(self.shadow_checkbox)
         text_layout.addRow(border_line)
         text_layout.addRow(border_enable_widget)
-        text_layout.addRow(self._create_label("Border Color:"), self.create_color_row(self.text_border_preview, self.pick_text_border_btn, self.reset_text_border_btn))
+        text_layout.addRow(self._create_label("Outline Color:"), self.create_color_row(self.text_border_preview, self.pick_text_border_btn, self.reset_text_border_btn))
         text_layout.addRow(self.override_border_size_checkbox)
-        text_layout.addRow(self._create_label("Border Size:"), border_size_layout)
+        text_layout.addRow(self._create_label("Outline Size:"), border_size_layout)
         text_layout.addRow(self._create_label("Title Case:"), title_case_widget)
         text_layout.addRow(self._create_label("Artist Case:"), artist_case_widget)
         self.settings_col_2.addWidget(text_group) 
@@ -1339,7 +1459,7 @@ class ColorEditorDialog(QDialog):
         yield # Yield after Typography Group
 
         # --- Background & Atmosphere Group (Current Theme) ---
-        self.ui_group = QGroupBox("Background & Atmosphere")
+        self.ui_group = QGroupBox("Background & Blobs")
         ui_group_layout = QVBoxLayout(self.ui_group)
         ui_group_layout.setSpacing(15)
 
@@ -1352,7 +1472,7 @@ class ColorEditorDialog(QDialog):
         self.ui_bg_preview, pick_ui_bg_btn, self.reset_ui_bg_btn = self._create_color_picker(self.ui_bg_color, self.pick_ui_bg_color, self.reset_ui_bg_color)
         ui_colors_layout.addRow(self._create_label("Player Background:"), self.create_color_row(self.ui_bg_preview, pick_ui_bg_btn, self.reset_ui_bg_btn))
         self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn = self._create_color_picker(self.ui_accent_color, self.pick_ui_accent_color, self.reset_ui_accent_color)
-        ui_colors_layout.addRow(self._create_label("Art Border:"), self.create_color_row(self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn))
+        ui_colors_layout.addRow(self._create_label("Accent / Art Frame:"), self.create_color_row(self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn))
         ui_group_layout.addWidget(ui_colors_widget)
 
         # 2. Blobs Section
@@ -1381,7 +1501,7 @@ class ColorEditorDialog(QDialog):
         blob_button_widget = QWidget()
         blob_button_layout = QHBoxLayout(blob_button_widget)
         blob_button_layout.setContentsMargins(0,0,0,0)
-        blob_label = self._create_dynamic_label("Blobs:", is_html_or_wrapped=False)
+        blob_label = self._create_dynamic_label("Blob Colors:", is_html_or_wrapped=False)
         blob_font = blob_label.font()
         blob_font.setBold(True)
         blob_label.setFont(blob_font)
@@ -1398,11 +1518,28 @@ class ColorEditorDialog(QDialog):
         yield # Yield after UI Group
 
         # --- Album Art Group ---
-        self.art_group = QGroupBox("Album Art")
+        self.art_group = QGroupBox("Album Artwork")
         art_layout = QVBoxLayout(self.art_group)
+        self.album_art_border_checkbox = QCheckBox("Show Artwork Frame")
+        self.album_art_border_checkbox.setChecked(self.initial_album_art_border_enabled)
+        art_layout.addWidget(self.album_art_border_checkbox)
+
+        art_scope_widget = QWidget()
+        art_scope_layout = QHBoxLayout(art_scope_widget)
+        art_scope_layout.setContentsMargins(0, 0, 0, 0)
+        art_scope_layout.addWidget(self._create_dynamic_label("Custom Artwork Applies To:", is_html_or_wrapped=False))
+        self.custom_art_track_radio = QRadioButton("This Track")
+        self.custom_art_album_radio = QRadioButton("This Album")
+        self.custom_art_track_radio.setChecked(self.custom_art_scope == "track")
+        self.custom_art_album_radio.setChecked(self.custom_art_scope == "album")
+        art_scope_layout.addWidget(self.custom_art_track_radio)
+        art_scope_layout.addWidget(self.custom_art_album_radio)
+        art_scope_layout.addStretch(1)
+        art_layout.addWidget(art_scope_widget)
+
         art_button_layout = QHBoxLayout()
-        set_art_button = QPushButton("Set Custom Art...")
-        reset_art_button = QPushButton("Reset to Default")
+        set_art_button = QPushButton("Choose Custom Artwork...")
+        reset_art_button = QPushButton("Remove Custom Artwork")
         art_button_layout.addWidget(set_art_button)
         art_button_layout.addWidget(reset_art_button)
         art_layout.addLayout(art_button_layout)
@@ -1415,14 +1552,14 @@ class ColorEditorDialog(QDialog):
         yield # Yield after Art Group
 
         # --- Interface Group (Current Theme) ---
-        interface_group = QGroupBox("Interface")
+        interface_group = QGroupBox("Playback UI")
         interface_layout = QFormLayout(interface_group)
         
-        self.override_progress_bar_checkbox = QCheckBox("Override Progress Bar")
+        self.override_progress_bar_checkbox = QCheckBox("Use Theme-Specific Progress Bar Setting")
         self.override_progress_bar_checkbox.setChecked(self.is_progress_bar_overridden)
         self.override_progress_bar_checkbox.toggled.connect(self._on_override_progress_bar_toggled)
         
-        self.progress_bar_checkbox = QCheckBox("Enable Progress Bar")
+        self.progress_bar_checkbox = QCheckBox("Show Progress Bar")
         self.progress_bar_checkbox.setChecked(self.initial_progress_bar_enabled)
         self.progress_bar_checkbox.setEnabled(self.is_progress_bar_overridden)
         interface_layout.addRow(self.override_progress_bar_checkbox)
@@ -1432,7 +1569,7 @@ class ColorEditorDialog(QDialog):
         yield # Yield after Interface Group
 
         # --- Light Synchronization Group (Current Theme) ---
-        self.govee_group = QGroupBox("Light Synchronization")
+        self.govee_group = QGroupBox("Light Sync")
         govee_group_main_layout = QVBoxLayout(self.govee_group)
         govee_group_main_layout.setContentsMargins(10, 10, 10, 10)
         govee_group_main_layout.setSpacing(12)
@@ -1443,7 +1580,7 @@ class ColorEditorDialog(QDialog):
         status_layout.setContentsMargins(0,0,0,0)
         status_layout.setSpacing(6)
         lights_status = "Enabled" if self.parent().lights_enabled else "Disabled"
-        status_layout.addWidget(self._create_dynamic_label("Global Status:"))
+        status_layout.addWidget(self._create_dynamic_label("Global Lights:"))
         status_value_label = self._create_dynamic_label(lights_status)
         status_value_label.setStyleSheet("font-weight: normal;") # Counteract bold from GroupBox
         status_layout.addWidget(status_value_label)
@@ -1459,7 +1596,7 @@ class ColorEditorDialog(QDialog):
         brightness_layout = QHBoxLayout(brightness_widget)
         brightness_layout.setContentsMargins(0,0,0,0)
         
-        self.override_brightness_checkbox = QCheckBox("Override")
+        self.override_brightness_checkbox = QCheckBox("Use Theme")
         self.override_brightness_checkbox.setChecked(self.is_brightness_overridden)
         self.override_brightness_checkbox.toggled.connect(self._on_override_brightness_toggled)
         
@@ -1604,14 +1741,14 @@ class ColorEditorDialog(QDialog):
         # Default height start
         max_h = 600
         
-        # Iterate tabs to find max content size, BUT skip the 'Saved Themes' grid 
+        # Iterate tabs to find max content size, BUT skip the 'Theme Library' grid 
         # because it can get infinitely long. We want that one to scroll.
         for i in range(self.tab_widget.count()):
             page = self.tab_widget.widget(i)
             label = self.tab_widget.tabText(i)
             
-            # Skip calculating height based on the Saved Themes tab
-            if label == "Saved Themes":
+            # Skip calculating height based on the Theme Library tab
+            if label == "Theme Library":
                 continue
 
             scroll_area = page.findChild(QScrollArea)
@@ -2058,6 +2195,174 @@ class ColorEditorDialog(QDialog):
         layout.addWidget(radios["lower"])
         return radios, widget
 
+    def _normalize_shortcut_key_text(self, key_text):
+        if key_text is None:
+            return ""
+
+        candidate = str(key_text).strip()
+        if not candidate:
+            return ""
+
+        seq = QKeySequence.fromString(candidate, QKeySequence.NativeText)
+        if seq.isEmpty():
+            seq = QKeySequence.fromString(candidate, QKeySequence.PortableText)
+        if seq.isEmpty():
+            return ""
+
+        value = int(seq[0])
+        modifiers = value & int(Qt.KeyboardModifierMask)
+        if modifiers:
+            return ""
+
+        key = value & ~int(Qt.KeyboardModifierMask)
+        if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta, Qt.Key_AltGr):
+            return ""
+
+        return QKeySequence(key).toString(QKeySequence.NativeText)
+
+    def _normalize_shortcut_bindings(self, bindings):
+        normalized = {}
+        used_keys = set()
+
+        if not isinstance(bindings, dict):
+            bindings = {}
+
+        defaults = {
+            definition.get("id", ""): str(definition.get("default", ""))
+            for definition in self.shortcut_definitions
+        }
+
+        for definition in self.shortcut_definitions:
+            action_id = definition.get("id", "")
+            raw_key = bindings.get(action_id, defaults.get(action_id, ""))
+            key_text = self._normalize_shortcut_key_text(raw_key)
+            if key_text and key_text not in used_keys:
+                normalized[action_id] = key_text
+                used_keys.add(key_text)
+            else:
+                normalized[action_id] = ""
+
+        return normalized
+
+    def _shortcut_display_text(self, action_id):
+        key = self.shortcut_bindings.get(action_id, "")
+        return key if key else "Unassigned"
+
+    def _refresh_shortcut_rows(self):
+        for action_id, button in self.shortcut_buttons.items():
+            if self._shortcut_capture_action_id == action_id:
+                button.setText("Press key...")
+                button.setStyleSheet("font-weight: bold;")
+            else:
+                button.setText(self._shortcut_display_text(action_id))
+                button.setStyleSheet("")
+
+    def _cancel_shortcut_capture(self, clear_status=False):
+        if getattr(self, "_shortcut_capture_action_id", None) is None:
+            return
+        self.releaseKeyboard()
+        self._shortcut_capture_action_id = None
+        self._shortcut_capture_button = None
+        if clear_status and self.shortcut_status_label:
+            self.shortcut_status_label.setText("")
+        self._refresh_shortcut_rows()
+
+    def _on_shortcut_button_clicked(self, action_id):
+        if self._shortcut_capture_action_id == action_id:
+            self._cancel_shortcut_capture(clear_status=True)
+            return
+
+        self._shortcut_capture_action_id = action_id
+        self._shortcut_capture_button = self.shortcut_buttons.get(action_id)
+        self.grabKeyboard()
+        if self.shortcut_status_label:
+            label = next((d.get("label", action_id) for d in self.shortcut_definitions if d.get("id") == action_id), action_id)
+            self.shortcut_status_label.setText(f"Listening for {label}. Press a single key.")
+        self._refresh_shortcut_rows()
+
+    def _assign_shortcut(self, action_id, key_text):
+        normalized = self._normalize_shortcut_key_text(key_text)
+        if not normalized:
+            return
+
+        previous_action = None
+        for candidate_id, existing in self.shortcut_bindings.items():
+            if candidate_id != action_id and existing == normalized:
+                previous_action = candidate_id
+                break
+
+        if previous_action:
+            self.shortcut_bindings[previous_action] = ""
+
+        self.shortcut_bindings[action_id] = normalized
+        self._cancel_shortcut_capture(clear_status=False)
+        self._refresh_shortcut_rows()
+
+        if self.shortcut_status_label:
+            if previous_action:
+                prev_label = next((d.get("label", previous_action) for d in self.shortcut_definitions if d.get("id") == previous_action), previous_action)
+                self.shortcut_status_label.setText(f"Assigned {normalized}. Removed from {prev_label} to keep keys unique.")
+            else:
+                self.shortcut_status_label.setText(f"Assigned {normalized}.")
+
+    def _reset_shortcuts_to_defaults(self):
+        defaults = {
+            definition.get("id", ""): str(definition.get("default", ""))
+            for definition in self.shortcut_definitions
+        }
+        self._cancel_shortcut_capture(clear_status=False)
+        self.shortcut_bindings = self._normalize_shortcut_bindings(defaults)
+        self._refresh_shortcut_rows()
+        if self.shortcut_status_label:
+            self.shortcut_status_label.setText("Shortcut bindings reset to defaults.")
+
+    def _clear_shortcut_binding(self, action_id):
+        if action_id not in getattr(self, "shortcut_bindings", {}):
+            return
+
+        if getattr(self, "_shortcut_capture_action_id", None) == action_id:
+            self._cancel_shortcut_capture(clear_status=False)
+
+        self.shortcut_bindings[action_id] = ""
+        self._refresh_shortcut_rows()
+
+        if self.shortcut_status_label:
+            label = next((d.get("label", action_id) for d in self.shortcut_definitions if d.get("id") == action_id), action_id)
+            self.shortcut_status_label.setText(f"Cleared {label} shortcut.")
+
+    def keyPressEvent(self, event):
+        capture_action = getattr(self, "_shortcut_capture_action_id", None)
+        if capture_action:
+            modifiers = int(event.modifiers()) & ~int(Qt.KeypadModifier)
+            if modifiers:
+                if self.shortcut_status_label:
+                    self.shortcut_status_label.setText("Use a single key without Ctrl, Alt, Shift, or Meta modifiers.")
+                event.accept()
+                return
+
+            key = event.key()
+            if key in (Qt.Key_unknown, Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta, Qt.Key_AltGr):
+                event.accept()
+                return
+
+            key_text = QKeySequence(key).toString(QKeySequence.NativeText)
+            self._assign_shortcut(capture_action, key_text)
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+    def event(self, event):
+        # Qt can consume Tab for focus navigation before keyPressEvent.
+        # Intercept it here so users can bind the Tab key reliably.
+        capture_action = getattr(self, "_shortcut_capture_action_id", None)
+        if capture_action and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Tab:
+                self._assign_shortcut(capture_action, "Tab")
+                event.accept()
+                return True
+        return super().event(event)
+
     def paintEvent(self, event):
         painter = QPainter()
         if not painter.begin(self):
@@ -2085,6 +2390,10 @@ class ColorEditorDialog(QDialog):
 
     def mouseReleaseEvent(self, event):
         self.drag_pos = QPoint()
+
+    def closeEvent(self, event):
+        self._cancel_shortcut_capture(clear_status=False)
+        super().closeEvent(event)
 
     def create_color_row(self, preview_widget, pick_button, reset_button=None):
         row_widget = QWidget()
@@ -2332,6 +2641,12 @@ class ColorEditorDialog(QDialog):
     def reset_text_border_color(self):
         self._on_auto_text_border_toggled(True)
 
+    def pick_player_title_gradient_color(self):
+        new_color = self._get_themed_color(self.title_gradient_color, "Select Player Title Gradient Color")
+        if new_color.isValid():
+            self.title_gradient_color = new_color
+            self.title_grad_preview.setStyleSheet(f"background-color: {new_color.name()}; color: transparent; border-radius: 5px; border: 1px solid #555;")
+
     def _on_text_border_toggled(self, checked):
         # If the user manually toggles, we leave auto mode
         self.is_text_border_auto = False
@@ -2453,14 +2768,47 @@ class ColorEditorDialog(QDialog):
                         self.custom_art_b64 = base64.b64encode(image_file.read()).decode('utf-8')
                     new_pixmap = QPixmap(file_path)
                     self.current_art_pixmap = new_pixmap
+                    self._custom_art_changed = True
                 except Exception as e:
                     print(f"Error loading custom art: {e}")
                     self.custom_art_b64 = None
 
     def reset_custom_art(self):
         self.custom_art_b64 = None
+        self._custom_art_changed = True
         original_pixmap = self.parent().art.pixmap()
         self.current_art_pixmap = original_pixmap
+
+    def _active_custom_art_scope(self):
+        return "album" if hasattr(self, "custom_art_album_radio") and self.custom_art_album_radio.isChecked() else "track"
+
+    def _persist_custom_art(self):
+        scope = self._active_custom_art_scope()
+        track_config = self.color_cache.get_album_data(self.track_id) or {}
+        album_config = self.color_cache.get_album_data(self.album_id) or {}
+
+        if self.custom_art_b64:
+            if scope == "album":
+                album_config["custom_art_b64"] = self.custom_art_b64
+                self.color_cache.set_album_data(self.album_id, album_config)
+                if "custom_art_b64" in track_config:
+                    track_config.pop("custom_art_b64", None)
+                    self.color_cache.set_album_data(self.track_id, track_config)
+            else:
+                track_config["custom_art_b64"] = self.custom_art_b64
+                self.color_cache.set_album_data(self.track_id, track_config)
+                if "custom_art_b64" in album_config:
+                    album_config.pop("custom_art_b64", None)
+                    self.color_cache.set_album_data(self.album_id, album_config)
+        else:
+            if scope == "album":
+                if "custom_art_b64" in album_config:
+                    album_config.pop("custom_art_b64", None)
+                    self.color_cache.set_album_data(self.album_id, album_config)
+            else:
+                if "custom_art_b64" in track_config:
+                    track_config.pop("custom_art_b64", None)
+                    self.color_cache.set_album_data(self.track_id, track_config)
 
     def reset_theme_to_auto(self):
         """Resets all color overrides to auto and regenerates."""
@@ -2607,7 +2955,7 @@ class ColorEditorDialog(QDialog):
         
         browser_layout.addLayout(control_layout)
 
-        self.tab_widget.addTab(browser_tab, "Saved Themes")
+        self.tab_widget.addTab(browser_tab, "Theme Library")
         
         self.populate_theme_browser()
         
@@ -2650,7 +2998,7 @@ class ColorEditorDialog(QDialog):
                 row += 1
         
         if not found_any:
-            lbl = QLabel("No saved themes found.")
+            lbl = QLabel("No themes saved yet.")
             lbl.setStyleSheet(f"color: {self.ui_text_color.name()}; font-style: italic;")
             self.browser_grid.addWidget(lbl, 0, 0)
 
@@ -2994,6 +3342,19 @@ class ColorEditorDialog(QDialog):
             # Text Settings
             self.shadow_checkbox.setChecked(self.cached_data.get("shadow_enabled", main_window_state._current_shadow_enabled))
             self.initial_shadow_enabled = self.shadow_checkbox.isChecked()
+            album_border_enabled = self.cached_data.get("album_art_border_enabled", True)
+            self.album_art_border_checkbox.setChecked(album_border_enabled)
+            self.initial_album_art_border_enabled = album_border_enabled
+            self.title_gradient_checkbox.setChecked(bool(self.cached_data.get("title_gradient_enabled", False)))
+            title_gradient_color_rgb = self.cached_data.get("title_gradient_color", [255, 255, 255])
+            self.title_gradient_color = QColor(*title_gradient_color_rgb)
+            self.title_grad_preview.setStyleSheet(
+                f"background-color: {self.title_gradient_color.name()}; color: transparent; border-radius: 5px; border: 1px solid #555;"
+            )
+            self.title_gradient_dir_combo.setCurrentText(str(self.cached_data.get("title_gradient_direction", "Left to Right")))
+            self.initial_title_gradient_enabled = self.title_gradient_checkbox.isChecked()
+            self.initial_title_gradient_color = QColor(self.title_gradient_color)
+            self.initial_title_gradient_direction = self.title_gradient_dir_combo.currentText()
             
             font_family = self.cached_data.get("font_family")
             
@@ -3092,6 +3453,18 @@ class ColorEditorDialog(QDialog):
 
             # Custom Art
             self.custom_art_b64 = track_cache.get("custom_art_b64")
+            self.custom_art_scope = "track"
+            if not self.custom_art_b64:
+                self.custom_art_b64 = (self.color_cache.get_album_data(self.album_id) or {}).get("custom_art_b64")
+                if self.custom_art_b64:
+                    self.custom_art_scope = "album"
+
+            if hasattr(self, "custom_art_track_radio") and hasattr(self, "custom_art_album_radio"):
+                self.custom_art_track_radio.setChecked(self.custom_art_scope == "track")
+                self.custom_art_album_radio.setChecked(self.custom_art_scope == "album")
+
+            self.initial_custom_art_scope = self.custom_art_scope
+            self._custom_art_changed = False
             
             # --- Handle non-Spotify source ---
             is_spotify_source = (self.media_source == 'spotify')
@@ -3188,41 +3561,63 @@ class ColorEditorDialog(QDialog):
                 changes.append({"key": key, "label": label, "value": current_val, "changed": True, "type": "global"})
 
         # Typography
-        check("default_font_family", "Default Font Family", self.default_font_family_combo.currentText(), "Trebuchet MS")
-        check("default_font_style", "Default Font Style", self.default_font_style_combo.currentText(), "Bold")
-        check("default_font_size_scale", "Default Font Size", self.default_font_size_slider.value(), 100, int)
-        check("default_progress_bar_enabled", "Default Progress Bar", self.default_progress_bar_checkbox.isChecked(), False, bool)
-        check("default_text_border_enabled", "Default Text Border", self.default_text_border_checkbox.isChecked(), False, bool)
-        check("default_text_border_size", "Default Border Size", self.default_text_border_size_slider.value(), 3, int)
+        check("default_font_family", "App Default: Font Family", self.default_font_family_combo.currentText(), "Trebuchet MS")
+        check("default_font_style", "App Default: Font Style", self.default_font_style_combo.currentText(), "Bold")
+        check("default_font_size_scale", "App Default: Font Size", self.default_font_size_slider.value(), 100, int)
+        check("default_progress_bar_enabled", "App Default: Show Progress Bar", self.default_progress_bar_checkbox.isChecked(), False, bool)
+        check("default_text_border_enabled", "App Default: Show Text Outline", self.default_text_border_checkbox.isChecked(), False, bool)
+        check("default_text_border_size", "App Default: Text Outline Size", self.default_text_border_size_slider.value(), 3, int)
 
         # Notifications
-        check("notification_enabled", "Notifications Enabled", self.notification_enabled_checkbox.isChecked(), False, bool)
-        check("notification_monitor_index", "Notification Monitor", self.notification_monitor_combo.currentIndex(), 0, int)
-        check("notification_size", "Notification Size", self.notif_size_slider.value(), 1, int)
-        check("notification_corner", "Notification Corner", self.notification_corner_combo.currentText(), "Top-Right")
-        check("notification_anim", "Notification Animation", self.notification_anim_combo.currentText(), "Fade")
-        check("notification_dir", "Notification Direction", self.notification_dir_combo.currentText(), "From Top")
-        check("notification_permanent", "Notification Permanent", self.notif_permanent_checkbox.isChecked(), False, bool)
-        check("notification_duration", "Notification Duration", self.notif_duration_slider.value(), 4000, int)
-        check("notification_anim_duration", "Notification Anim Speed", self.notif_anim_speed_slider.value(), 500, int)
-        check("notification_bg_opacity", "Notification Opacity", self.notif_opacity_slider.value(), 230, int)
-        check("notification_border_enabled", "Notification Border", self.notif_border_checkbox.isChecked(), False, bool)
-        check("notification_smart_hide", "Notification Smart Hide", self.notif_smart_hide_checkbox.isChecked(), False, bool)
-        check("notification_ignore_taskbar", "Notification Ignore Taskbar", self.notif_ignore_taskbar_checkbox.isChecked(), True, bool)
+        check("notification_enabled", "Notifications: Enabled", self.notification_enabled_checkbox.isChecked(), False, bool)
+        check("notification_monitor_index", "Notifications: Display", self.notification_monitor_combo.currentIndex(), 0, int)
+        check("notification_size", "Notifications: Size", self.notif_size_slider.value(), 1, int)
+        check("notification_corner", "Notifications: Position", self.notification_corner_combo.currentText(), "Top-Right")
+        check("notification_anim", "Notifications: Animation Style", self.notification_anim_combo.currentText(), "Fade")
+        check("notification_dir", "Notifications: Slide Direction", self.notification_dir_combo.currentText(), "From Top")
+        check("notification_permanent", "Notifications: Keep Visible for Full Song", self.notif_permanent_checkbox.isChecked(), False, bool)
+        check("notification_duration", "Notifications: Visible Duration", self.notif_duration_slider.value(), 4000, int)
+        check("notification_anim_duration", "Notifications: Transition Speed", self.notif_anim_speed_slider.value(), 500, int)
+        check("notification_bg_opacity", "Notifications: Background Opacity", self.notif_opacity_slider.value(), 230, int)
+        check("notification_border_enabled", "Notifications: Show Border", self.notif_border_checkbox.isChecked(), False, bool)
+        check("notification_smart_hide", "Notifications: Smart Hide", self.notif_smart_hide_checkbox.isChecked(), False, bool)
+        check("notification_ignore_taskbar", "Notifications: Ignore Taskbar", self.notif_ignore_taskbar_checkbox.isChecked(), True, bool)
 
         # Global Visuals
-        check("default_govee_brightness", "Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
+        check("default_govee_brightness", "Lights: Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
+        current_lava_preset = self.lava_preset_combo.currentData() or LAVA_LAMP_PRESET
+        check("lava_lamp_preset", "Background: Lava Lamp Style", current_lava_preset, LAVA_LAMP_PRESET)
         
         # --- NEW: Sound Volume Check ---
-        check("sound_volume", "Sound Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
-        check("minimize_to_notification_only", "Minimize Action", self.minimize_mode_checkbox.isChecked(), True, bool)
+        check("sound_volume", "Sound: Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
+        check("minimize_to_notification_only", "Window: Minimize Behavior", self.minimize_mode_checkbox.isChecked(), True, bool)
+        check("player_art_side", "Layout: Album Art Side", self.player_art_side_combo.currentText().strip().lower(), "left")
 
-        # Global Visuals
-        check("default_govee_brightness", "Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
+        current_shortcuts = self._normalize_shortcut_bindings(self.shortcut_bindings)
+        raw_shortcuts = settings.value("keyboard_shortcuts", "")
+        stored_shortcuts = {}
+        if isinstance(raw_shortcuts, dict):
+            stored_shortcuts = raw_shortcuts
+        elif isinstance(raw_shortcuts, str) and raw_shortcuts.strip():
+            try:
+                parsed = json.loads(raw_shortcuts)
+                if isinstance(parsed, dict):
+                    stored_shortcuts = parsed
+            except (json.JSONDecodeError, TypeError, ValueError):
+                stored_shortcuts = {}
+
+        stored_shortcuts = self._normalize_shortcut_bindings(stored_shortcuts)
+        if current_shortcuts != stored_shortcuts:
+            changes.append({
+                "key": "keyboard_shortcuts",
+                "label": "Keyboard: Shortcut Bindings",
+                "value": current_shortcuts,
+                "changed": True,
+                "type": "global"
+            })
+
         # --- NEW: Check Override ---
-        check("govee_brightness_override", "Mobile App Override", self.govee_override_checkbox.isChecked(), False, bool)
-        
-        check("sound_volume", "Sound Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
+        check("govee_brightness_override", "Lights: Mobile App Brightness Control", self.govee_override_checkbox.isChecked(), False, bool)
 
         return changes
 
@@ -3249,54 +3644,67 @@ class ColorEditorDialog(QDialog):
                 potential_saves.append({"key": key, "label": label, "value": current_val, "changed": changed or in_cache or always_save, "type": "theme"})
 
         # Gather all potential settings
-        check_auto("ui_palette", "Theme Colors", self.is_bg_auto and self.is_accent_auto, [list(self.ui_bg_color.getRgb()[:3]), list(self.ui_accent_color.getRgb()[:3])], [list(self.initial_ui_bg_color.getRgb()[:3]), list(self.initial_ui_accent_color.getRgb()[:3])])
-        check_auto("player_bg_color", "Player Background", self.is_bg_auto, list(self.ui_bg_color.getRgb()[:3]), list(self.initial_ui_bg_color.getRgb()[:3]))
-        check_auto("blob_palette", "Background Blob Colors", self.is_blob_auto, [list(c.getRgb()[:3]) for c in self.blob_colors], [list(c.getRgb()[:3]) for c in self.initial_blob_colors])
-        check_manual("shadow_enabled", "Text Shadow", self.shadow_checkbox.isChecked(), self.initial_shadow_enabled)
+        check_auto("ui_palette", "Track Theme: Core Colors", self.is_bg_auto and self.is_accent_auto, [list(self.ui_bg_color.getRgb()[:3]), list(self.ui_accent_color.getRgb()[:3])], [list(self.initial_ui_bg_color.getRgb()[:3]), list(self.initial_ui_accent_color.getRgb()[:3])])
+        check_auto("player_bg_color", "Track Theme: Player Background", self.is_bg_auto, list(self.ui_bg_color.getRgb()[:3]), list(self.initial_ui_bg_color.getRgb()[:3]))
+        check_auto("blob_palette", "Track Theme: Blob Colors", self.is_blob_auto, [list(c.getRgb()[:3]) for c in self.blob_colors], [list(c.getRgb()[:3]) for c in self.initial_blob_colors])
+        check_manual("shadow_enabled", "Track Theme: Text Shadow", self.shadow_checkbox.isChecked(), self.initial_shadow_enabled)
+        check_manual("album_art_border_enabled", "Track Theme: Artwork Frame", self.album_art_border_checkbox.isChecked(), self.initial_album_art_border_enabled)
+        check_manual("title_gradient_enabled", "Track Theme: Title Gradient", self.title_gradient_checkbox.isChecked(), self.initial_title_gradient_enabled)
+        check_manual("title_gradient_color", "Track Theme: Title Gradient Color", list(self.title_gradient_color.getRgb()[:3]), list(self.initial_title_gradient_color.getRgb()[:3]))
+        check_manual("title_gradient_direction", "Track Theme: Title Gradient Direction", self.title_gradient_dir_combo.currentText(), self.initial_title_gradient_direction)
         
         if self.override_font_checkbox.isChecked():
-            check_manual("font_family", "Font Family", self.font_family_combo.currentText(), self.initial_font_family, always_save=True)
-            check_manual("font_style", "Font Style", self.font_style_combo.currentText(), self.initial_font_style, always_save=True)
+            check_manual("font_family", "Track Theme: Font Family", self.font_family_combo.currentText(), self.initial_font_family, always_save=True)
+            check_manual("font_style", "Track Theme: Font Style", self.font_style_combo.currentText(), self.initial_font_style, always_save=True)
         else:
-            if "font_family" in self.cached_data: potential_saves.append({"key": "font_family", "label": "Font Family (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
-            if "font_style" in self.cached_data: potential_saves.append({"key": "font_style", "label": "Font Style (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+            if "font_family" in self.cached_data: potential_saves.append({"key": "font_family", "label": "Track Theme: Font Family (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+            if "font_style" in self.cached_data: potential_saves.append({"key": "font_style", "label": "Track Theme: Font Style (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
         
         t_case = self._get_selected_case(self.title_case_radios)
-        if t_case != "default": check_manual("title_case", "Title Casing", t_case, self.initial_title_case, always_save=True)
-        elif "title_case" in self.cached_data: potential_saves.append({"key": "title_case", "label": "Title Casing (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+        if t_case != "default": check_manual("title_case", "Track Theme: Title Case", t_case, self.initial_title_case, always_save=True)
+        elif "title_case" in self.cached_data: potential_saves.append({"key": "title_case", "label": "Track Theme: Title Case (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
 
         a_case = self._get_selected_case(self.artist_case_radios)
-        if a_case != "default": check_manual("artist_case", "Artist Casing", a_case, self.initial_artist_case, always_save=True)
-        elif "artist_case" in self.cached_data: potential_saves.append({"key": "artist_case", "label": "Artist Casing (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+        if a_case != "default": check_manual("artist_case", "Track Theme: Artist Case", a_case, self.initial_artist_case, always_save=True)
+        elif "artist_case" in self.cached_data: potential_saves.append({"key": "artist_case", "label": "Track Theme: Artist Case (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
         
-        check_auto("text_border_enabled", "Text Border Enable", self.is_text_border_auto, self.text_border_checkbox.isChecked(), self.initial_text_border_enabled)
-        check_auto("text_border_color", "Text Border Color", self.is_text_border_color_auto, list(self.text_border_color.getRgb()[:3]), list(self.initial_text_border_color.getRgb()[:3]))
+        check_auto("text_border_enabled", "Track Theme: Text Outline", self.is_text_border_auto, self.text_border_checkbox.isChecked(), self.initial_text_border_enabled)
+        check_auto("text_border_color", "Track Theme: Text Outline Color", self.is_text_border_color_auto, list(self.text_border_color.getRgb()[:3]), list(self.initial_text_border_color.getRgb()[:3]))
         
         if self.override_border_size_checkbox.isChecked():
-            check_manual("text_border_size", "Text Border Size", self.text_border_size_slider.value(), self.initial_text_border_size, always_save=True)
+            check_manual("text_border_size", "Track Theme: Text Outline Size", self.text_border_size_slider.value(), self.initial_text_border_size, always_save=True)
         elif "text_border_size" in self.cached_data:
-            potential_saves.append({"key": "text_border_size", "label": "Text Border Size (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+            potential_saves.append({"key": "text_border_size", "label": "Track Theme: Text Outline Size (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
             
         current_lights_palette = [list(p["color"].getRgb()[:3]) for p in self.govee_color_pickers]
         initial_lights_palette_list = [list(c.getRgb()[:3]) for c in self.effective_initial_lights_palette]
-        check_auto("lights_config", "Govee Light Colors", self.is_lights_auto, {"mode": "custom", "palette": current_lights_palette}, {"mode": "custom", "palette": initial_lights_palette_list})
+        check_auto("lights_config", "Track Theme: Light Colors", self.is_lights_auto, {"mode": "custom", "palette": current_lights_palette}, {"mode": "custom", "palette": initial_lights_palette_list})
 
         if self.override_progress_bar_checkbox.isChecked():
-            check_manual("progress_bar_enabled", "Progress Bar", self.progress_bar_checkbox.isChecked(), self.initial_progress_bar_enabled, always_save=True)
+            check_manual("progress_bar_enabled", "Track Theme: Show Progress Bar", self.progress_bar_checkbox.isChecked(), self.initial_progress_bar_enabled, always_save=True)
         elif "progress_bar_enabled" in self.cached_data:
-            potential_saves.append({"key": "progress_bar_enabled", "label": "Progress Bar (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+            potential_saves.append({"key": "progress_bar_enabled", "label": "Track Theme: Progress Bar (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
 
         if self.override_size_checkbox.isChecked():
-            check_manual("font_size_scale", "Font Size", self.font_size_slider.value(), self.initial_font_size_scale, always_save=True)
+            check_manual("font_size_scale", "Track Theme: Font Size", self.font_size_slider.value(), self.initial_font_size_scale, always_save=True)
         elif "font_size_scale" in self.cached_data:
-            potential_saves.append({"key": "font_size_scale", "label": "Font Size (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
+            potential_saves.append({"key": "font_size_scale", "label": "Track Theme: Font Size (Reset)", "value": "__REMOVE__", "changed": True, "type": "theme"})
 
         current_val = self.govee_brightness_slider.value() / 100.0 if self.override_brightness_checkbox.isChecked() else None
         initial_val = self.initial_track_brightness / 100.0 if self.initial_is_brightness_overridden else None
         if current_val != initial_val:
-            check_manual("govee_brightness", "Brightness Override", current_val, initial_val, always_save=True)
+            check_manual("govee_brightness", "Track Theme: Light Brightness", current_val, initial_val, always_save=True)
 
-        check_auto("text_color", "Text Color", self.is_text_color_auto, list(self.ui_text_color.getRgb()[:3]), list(self.initial_ui_text_color.getRgb()[:3]))
+        check_auto("text_color", "Track Theme: Text Color", self.is_text_color_auto, list(self.ui_text_color.getRgb()[:3]), list(self.initial_ui_text_color.getRgb()[:3]))
+
+        if self._custom_art_changed or (self._active_custom_art_scope() != self.initial_custom_art_scope):
+            potential_saves.append({
+                "key": "custom_art_scope",
+                "label": "Track Theme: Custom Artwork",
+                "value": "__CUSTOM_ART__",
+                "changed": True,
+                "type": "theme"
+            })
 
         return potential_saves
     
@@ -3325,6 +3733,10 @@ class ColorEditorDialog(QDialog):
 
         # 2. Typography
         album_config["shadow_enabled"] = self.shadow_checkbox.isChecked()
+        album_config["album_art_border_enabled"] = self.album_art_border_checkbox.isChecked()
+        album_config["title_gradient_enabled"] = self.title_gradient_checkbox.isChecked()
+        album_config["title_gradient_color"] = list(self.title_gradient_color.getRgb()[:3])
+        album_config["title_gradient_direction"] = self.title_gradient_dir_combo.currentText()
         
         # We save the text currently displayed in the combo boxes. 
         # On the next load, the loader will see these values and automatically 
@@ -3363,11 +3775,9 @@ class ColorEditorDialog(QDialog):
         # 8. Save to Cache
         self.color_cache.set_album_data(self.album_id, album_config)
         
-        # 9. Handle Custom Art (Separate key)
-        if self.custom_art_b64:
-            track_config = self.color_cache.get_album_data(self.track_id) or {}
-            track_config["custom_art_b64"] = self.custom_art_b64
-            self.color_cache.set_album_data(self.track_id, track_config)
+        # 9. Handle Custom Art (scope-aware)
+        needs_art_reload = self._custom_art_changed or (self._active_custom_art_scope() != self.initial_custom_art_scope)
+        self._persist_custom_art()
 
         # 10. Apply Immediate Side Effects (Blob Density)
         slider_value = self.blob_amount_slider.value()
@@ -3375,7 +3785,12 @@ class ColorEditorDialog(QDialog):
             self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
 
         # 11. Notify & Refresh
-        self.config_saved.emit(self.album_id, album_config)
+        emit_config = dict(album_config)
+        if needs_art_reload:
+            emit_config["_reload_art"] = True
+            self.initial_custom_art_scope = self._active_custom_art_scope()
+            self._custom_art_changed = False
+        self.config_saved.emit(self.album_id, emit_config)
         
         if hasattr(self, 'browser_grid'):
             self.populate_theme_browser()
@@ -3411,16 +3826,29 @@ class ColorEditorDialog(QDialog):
         for item in global_changes:
             if item['key'] in keys_to_save:
                 val = item['value']
-                if isinstance(val, bool): settings.setValue(item['key'], "true" if val else "false")
-                else: settings.setValue(item['key'], val)
+                if item['key'] == "keyboard_shortcuts":
+                    settings.setValue(item['key'], json.dumps(self._normalize_shortcut_bindings(val)))
+                elif isinstance(val, bool):
+                    settings.setValue(item['key'], "true" if val else "false")
+                else:
+                    settings.setValue(item['key'], val)
+
+        if "keyboard_shortcuts" in keys_to_save and self.parent() and hasattr(self.parent(), 'apply_shortcut_bindings'):
+            self.parent().apply_shortcut_bindings(self.shortcut_bindings, persist=False)
 
         # 4. Save Theme Settings
+        needs_art_reload = False
+        did_persist_custom_art = False
         if self.media_source == 'spotify':
             album_config = self.cached_data.copy()
             theme_keys_processed = False
+            needs_art_reload = self._custom_art_changed or (self._active_custom_art_scope() != self.initial_custom_art_scope)
+            should_persist_custom_art = needs_art_reload and (quick or "custom_art_scope" in keys_to_save)
             
             for item in theme_changes:
                 if item['key'] in keys_to_save:
+                    if item['key'] == "custom_art_scope":
+                        continue
                     theme_keys_processed = True
                     if item['value'] == "__REMOVE__":
                         album_config.pop(item['key'], None)
@@ -3441,14 +3869,19 @@ class ColorEditorDialog(QDialog):
                 if self.parent():
                     self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
 
-            if self.custom_art_b64:
-                track_config = self.color_cache.get_album_data(self.track_id) or {}
-                track_config["custom_art_b64"] = self.custom_art_b64
-                self.color_cache.set_album_data(self.track_id, track_config)
+            if should_persist_custom_art:
+                self._persist_custom_art()
+                self.initial_custom_art_scope = self._active_custom_art_scope()
+                self._custom_art_changed = False
+                did_persist_custom_art = True
 
         # 5. Notify Main Window
         if keys_to_save or quick:
-            self.config_saved.emit(self.album_id, self.color_cache.get_album_data(self.album_id) or {})
+            emit_config = self.color_cache.get_album_data(self.album_id) or {}
+            if self.media_source == 'spotify' and did_persist_custom_art:
+                emit_config = dict(emit_config)
+                emit_config["_reload_art"] = True
+            self.config_saved.emit(self.album_id, emit_config)
             # Refresh browser tab if open to show new metadata
             if hasattr(self, 'browser_grid'):
                 self.populate_theme_browser()
@@ -3585,7 +4018,7 @@ class ColorEditorDialog(QDialog):
             self.apple_music_key_id_input.setEchoMode(QLineEdit.Normal)
             self.apple_music_private_key_input.setEchoMode(QLineEdit.Normal)
             self.apple_music_user_token_input.setEchoMode(QLineEdit.Normal)
-            button.setText("Hide Credentials")
+            button.setText("Hide Secrets")
         else:
             self.spotify_id_input.setEchoMode(QLineEdit.Password)
             self.spotify_secret_input.setEchoMode(QLineEdit.Password)
@@ -3594,7 +4027,7 @@ class ColorEditorDialog(QDialog):
             self.apple_music_key_id_input.setEchoMode(QLineEdit.Password)
             self.apple_music_private_key_input.setEchoMode(QLineEdit.Password)
             self.apple_music_user_token_input.setEchoMode(QLineEdit.Password)
-            button.setText("Show Credentials")
+            button.setText("Show Secrets")
 
     def confirm_clear_cache(self):
         warning_msg = (

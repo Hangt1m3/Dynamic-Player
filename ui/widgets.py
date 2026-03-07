@@ -5,7 +5,7 @@ from PyQt5.QtCore import (Qt, pyqtProperty, pyqtSignal, QObject, QPointF, QRectF
                           QPropertyAnimation, QEasingCurve, QTimer, QParallelAnimationGroup, QRect, QEvent)
 from PyQt5.QtWidgets import (QLabel, QProgressBar, QGraphicsOpacityEffect, QSizePolicy, QWidget, 
                              QPushButton, QComboBox, QGroupBox, QCheckBox, QRadioButton, QAbstractButton)
-from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase)
+from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase, QLinearGradient)
 from PyQt5.QtWidgets import QStyledItemDelegate
 class BlobManager:
     """Manages the positions and properties of all blobs to prevent overlap."""
@@ -21,6 +21,14 @@ class BlobManager:
     def remove_blob(self, blob):
         if blob in self.blobs: self.blobs.remove(blob)
         if blob in self.dying_blobs: self.dying_blobs.remove(blob)
+
+    def stop_all(self):
+        for blob in list(self.blobs):
+            blob.stop()
+        for blob in list(self.dying_blobs):
+            blob.stop()
+        self.blobs.clear()
+        self.dying_blobs.clear()
 
     def update_palette(self, new_palette):
         self.palette = new_palette or []
@@ -51,9 +59,9 @@ class BlobManager:
         unique_colors = set(c.rgba() for c in self.palette)
         variety_count = len(unique_colors)
         # New Logic: Choose number of blobs based on color variety
-        # Minimum 2, Maximum 10. roughly 2 blobs per unique color in palette.
+        # Minimum 2, Maximum 8. roughly 2 blobs per unique color in palette.
         unique_colors_count = len(self.palette)
-        target_count = max(2, min(10, unique_colors_count * 2))
+        target_count = max(2, min(8, unique_colors_count * 2))
 
         # Add blobs if we have too few
         while len(self.blobs) < target_count:
@@ -85,6 +93,10 @@ class BlobManager:
         return QPointF(random.uniform(0, 1) * self.parent_size.width(), random.uniform(0, 1) * self.parent_size.height())
 
 class Blob(QObject):
+    _pixmap_cache = {}
+    _pixmap_cache_order = []
+    _pixmap_cache_limit = 96
+
     def __init__(self, manager, color, start_delay=0):
         super().__init__()
         self.manager = manager
@@ -130,6 +142,12 @@ class Blob(QObject):
         base_size = int(self.radius * 2); max_texture_size = 256 
         size = min(base_size, max_texture_size)
         if size <= 0: return
+        cache_key = (size, self._color.rgba())
+        cached = Blob._pixmap_cache.get(cache_key)
+        if cached is not None:
+            self.pixmap = cached
+            return
+
         self.pixmap = QPixmap(size, size); self.pixmap.fill(Qt.transparent)
         painter = QPainter()
         if not painter.begin(self.pixmap):
@@ -140,6 +158,12 @@ class Blob(QObject):
             painter.setBrush(QBrush(gradient)); painter.setPen(Qt.NoPen); painter.drawEllipse(0, 0, size, size)
         finally:
             painter.end()
+
+        Blob._pixmap_cache[cache_key] = self.pixmap
+        Blob._pixmap_cache_order.append(cache_key)
+        if len(Blob._pixmap_cache_order) > Blob._pixmap_cache_limit:
+            oldest = Blob._pixmap_cache_order.pop(0)
+            Blob._pixmap_cache.pop(oldest, None)
     
     def get_opacity(self): return self._opacity
     def set_opacity(self, value): self._opacity = value
@@ -240,6 +264,12 @@ class ScrollingTextLabel(QLabel):
         self._text_color = QColor(255, 255, 255, 0); self._scroll_pos = 0; self._full_text = ""; self._is_scrolling = False
         self._border_enabled = False; self._border_color = QColor("black"); self._border_width = 3; self._opacity = 1.0
         self._anim_offset_y = 0.0; self._anim_offset_x = 0.0; self._use_standard_painting = False
+        self._text_scale = 1.0
+        self._multiline_enabled = False
+        self._max_lines = 1
+        self._gradient_enabled = False
+        self._gradient_color = QColor(255, 255, 255)
+        self._gradient_direction = "Left to Right"
         self._scroll_animation = QPropertyAnimation(self, b"scroll_pos"); self._scroll_animation.setLoopCount(-1); self._scroll_animation.setEasingCurve(QEasingCurve.Linear)
 
     @pyqtProperty(int)
@@ -262,10 +292,77 @@ class ScrollingTextLabel(QLabel):
     def get_anim_offset_x(self): return self._anim_offset_x
     def set_anim_offset_x(self, val): self._anim_offset_x = val; self.update()
     anim_offset_x = pyqtProperty(float, fget=get_anim_offset_x, fset=set_anim_offset_x)
+    def get_text_scale(self): return self._text_scale
+    def set_text_scale(self, val): self._text_scale = val; self.update()
+    textScale = pyqtProperty(float, fget=get_text_scale, fset=set_text_scale)
     def setStandardPainting(self, enabled):
         self._use_standard_painting = enabled
         if enabled: self._scroll_animation.stop(); self._is_scrolling = False
         self.update()
+    def setMaxLines(self, max_lines=1):
+        self._max_lines = max(1, int(max_lines))
+        self._multiline_enabled = self._max_lines > 1
+        if self._multiline_enabled:
+            self._scroll_animation.stop(); self._is_scrolling = False; self.scroll_pos = 0
+        self.update_scroll()
+        self.update()
+    def setGradient(self, enabled=False, secondary_color=None, direction="Left to Right"):
+        self._gradient_enabled = bool(enabled)
+        if secondary_color is not None:
+            self._gradient_color = QColor(secondary_color)
+        self._gradient_direction = direction or "Left to Right"
+        self.update()
+    def _get_gradient_brush(self, text_bounds):
+        if not self._gradient_enabled:
+            return QBrush(self._text_color)
+        secondary = QColor(self._gradient_color)
+        secondary.setAlpha(self._text_color.alpha())
+        direction = (self._gradient_direction or "Left to Right").lower()
+        if direction == "top to bottom":
+            gradient = QLinearGradient(text_bounds.center().x(), text_bounds.top(), text_bounds.center().x(), text_bounds.bottom())
+        elif direction == "bottom-left to top-right":
+            gradient = QLinearGradient(text_bounds.bottomLeft(), text_bounds.topRight())
+        elif direction == "top-left to bottom-right":
+            gradient = QLinearGradient(text_bounds.topLeft(), text_bounds.bottomRight())
+        else:
+            gradient = QLinearGradient(text_bounds.left(), text_bounds.center().y(), text_bounds.right(), text_bounds.center().y())
+        gradient.setColorAt(0.0, self._text_color)
+        gradient.setColorAt(1.0, secondary)
+        return QBrush(gradient)
+    def _draw_text_item(self, painter, x, y, text):
+        path = QPainterPath(); path.addText(x, y, self.font(), text)
+        if self._border_enabled:
+            pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._get_gradient_brush(path.boundingRect()))
+        painter.drawPath(path)
+    def _wrap_text_lines(self, metrics, max_width):
+        words = self._full_text.split()
+        if not words:
+            return [self._full_text] if self._full_text else []
+        lines = []
+        current_line = words[0]
+        for word in words[1:]:
+            candidate = f"{current_line} {word}"
+            if metrics.width(candidate) <= max_width:
+                current_line = candidate
+                continue
+            lines.append(current_line)
+            current_line = word
+            if len(lines) >= self._max_lines - 1:
+                break
+        if len(lines) < self._max_lines:
+            remaining_words = []
+            if current_line:
+                remaining_words.append(current_line)
+            processed_count = len(" ".join(lines + ([current_line] if current_line else [])).split())
+            if processed_count < len(words):
+                remaining_words.extend(words[processed_count:])
+            last_line_text = " ".join(remaining_words).strip()
+            if last_line_text:
+                lines.append(metrics.elidedText(last_line_text, Qt.ElideRight, max_width))
+        return lines[:self._max_lines]
     def paintEvent(self, event):
         if self._use_standard_painting: super().paintEvent(event); return
         if not self._full_text: return
@@ -274,27 +371,48 @@ class ScrollingTextLabel(QLabel):
             return
         try:
             painter.setRenderHint(QPainter.Antialiasing); painter.setOpacity(self._opacity)
-            metrics = QFontMetrics(self.font()); text_width = metrics.width(self._full_text)
-            if self._is_scrolling: x_pos = self._scroll_pos
+            metrics = QFontMetrics(self.font())
+            rect = self.rect()
+            center = rect.center()
+            painter.save()
+            painter.translate(center.x() + self._anim_offset_x, center.y() + self._anim_offset_y)
+            painter.scale(self._text_scale, self._text_scale)
+            painter.translate(-center.x(), -center.y())
+
+            if self._multiline_enabled:
+                max_width = max(1, rect.width())
+                lines = self._wrap_text_lines(metrics, max_width)
+                if lines:
+                    line_height = metrics.height()
+                    total_height = len(lines) * line_height
+                    base_y = rect.y() + (rect.height() - total_height) // 2 + metrics.ascent()
+                    for index, line in enumerate(lines):
+                        line_width = metrics.width(line)
+                        if self.alignment() & Qt.AlignLeft: x_pos = rect.x()
+                        elif self.alignment() & Qt.AlignRight: x_pos = rect.x() + rect.width() - line_width
+                        else: x_pos = rect.x() + (rect.width() - line_width) // 2
+                        y_pos = base_y + (index * line_height)
+                        self._draw_text_item(painter, x_pos, y_pos, line)
             else:
-                if self.alignment() & Qt.AlignLeft: x_pos = 0
-                elif self.alignment() & Qt.AlignRight: x_pos = self.width() - text_width
-                else: x_pos = (self.width() - text_width) // 2
-            x_pos += self._anim_offset_x; y_pos = (self.height() - metrics.height()) // 2 + metrics.ascent() + self._anim_offset_y
-            def draw_text_item(x, y):
-                if self._border_enabled:
-                    path = QPainterPath(); path.addText(x, y, self.font(), self._full_text)
-                    pen = QPen(self._border_color); pen.setWidth(self._border_width); pen.setJoinStyle(Qt.RoundJoin)
-                    painter.setPen(pen); painter.setBrush(Qt.NoBrush); painter.drawPath(path)
-                    painter.setPen(Qt.NoPen); painter.setBrush(self._text_color); painter.drawPath(path)
-                else: painter.setPen(self._text_color); painter.drawText(int(x), int(y), self._full_text)
-            draw_text_item(x_pos, y_pos)
-            if self._is_scrolling: draw_text_item(int(x_pos + text_width + 60), int(y_pos))
+                text_width = metrics.width(self._full_text)
+                if self._is_scrolling: x_pos = self._scroll_pos
+                else:
+                    if self.alignment() & Qt.AlignLeft: x_pos = 0
+                    elif self.alignment() & Qt.AlignRight: x_pos = self.width() - text_width
+                    else: x_pos = (self.width() - text_width) // 2
+                y_pos = (self.height() - metrics.height()) // 2 + metrics.ascent()
+                self._draw_text_item(painter, x_pos, y_pos, self._full_text)
+                if self._is_scrolling:
+                    self._draw_text_item(painter, int(x_pos + text_width + 60), int(y_pos), self._full_text)
+            painter.restore()
         finally:
             painter.end()
     def resizeEvent(self, event): super().resizeEvent(event); self.update_scroll()
     def update_scroll(self):
-        if self._use_standard_painting: return
+        if self._use_standard_painting or self._multiline_enabled:
+            self._scroll_animation.stop(); self._is_scrolling = False; self.scroll_pos = 0
+            self.update()
+            return
         if not self.isVisible() or not self._full_text: return
         metrics = QFontMetrics(self.font()); text_width = metrics.width(self._full_text); widget_width = self.width()
         should_scroll = text_width > widget_width
@@ -512,7 +630,6 @@ class ColorPreviewLabel(QLabel):
             self._custom_text_color = QColor(color)
         self.update()
     def setBorderSize(self, width): self._border_width = width; self.update()
-    def setCustomTextColor(self, color): self._custom_text_color = QColor(color); self.update()
     def setCustomFont(self, font): self._custom_font = font; self.update()
     def paintEvent(self, event):
         super().paintEvent(event)

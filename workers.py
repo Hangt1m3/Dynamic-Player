@@ -59,11 +59,16 @@ class TrackLoaderWorker(QRunnable):
         try:
             track_cache = self.color_cache.get_album_data(self.track_id) or {}
             album_cache = self.color_cache.get_album_data(self.album_id) or {}
-            custom_art_b64 = track_cache.get("custom_art_b64")
+            track_custom_art_b64 = track_cache.get("custom_art_b64")
+            album_custom_art_b64 = album_cache.get("custom_art_b64")
+            custom_art_b64 = track_custom_art_b64 or album_custom_art_b64
             
             low_res_pil_img = self.preloaded_image
             if not low_res_pil_img and custom_art_b64:
-                low_res_pil_img = Image.open(io.BytesIO(base64.b64decode(custom_art_b64))).convert("RGB")
+                try:
+                    low_res_pil_img = Image.open(io.BytesIO(base64.b64decode(custom_art_b64))).convert("RGB")
+                except Exception:
+                    low_res_pil_img = None
             if not low_res_pil_img and self.images_data:
                 try: 
                     resp = requests.get(self.images_data[-1]["url"], timeout=10); resp.raise_for_status()
@@ -110,6 +115,10 @@ class TrackLoaderWorker(QRunnable):
                 "font_style": cached_data.get("font_style", self.defaults.get("font_style")),
                 "font_size_scale": cached_data.get("font_size_scale", self.defaults.get("font_size_scale")),
                 "title_case": cached_data.get("title_case", "default"), "artist_case": cached_data.get("artist_case", "default"),
+                "album_art_border_enabled": cached_data.get("album_art_border_enabled", True),
+                "title_gradient_enabled": cached_data.get("title_gradient_enabled", False),
+                "title_gradient_color": cached_data.get("title_gradient_color", [255, 255, 255]),
+                "title_gradient_direction": cached_data.get("title_gradient_direction", "Left to Right"),
                 "text_border_enabled": text_border_enabled, "text_border_color": text_border_color,
                 "text_border_size": cached_data.get("text_border_size"), "token": self.token
             })

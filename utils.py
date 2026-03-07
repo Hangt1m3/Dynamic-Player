@@ -1,6 +1,7 @@
 # utils.py
 import os
 import sys
+from functools import lru_cache
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 from PyQt5.QtGui import QColor
@@ -188,3 +189,50 @@ def extract_palette_from_image(pil_img, num_lights=3, sample_size=150):
     border_needed = contrast < 3.5
     
     return ui_palette, lights_palette, blob_palette, best_text_color, border_needed
+
+
+@lru_cache(maxsize=1)
+def detect_opengl_background_support():
+    """
+    Lightweight runtime check for whether an OpenGL context can be created.
+    Returns (is_supported, reason).
+    """
+    try:
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtGui import QOpenGLContext, QOffscreenSurface, QSurfaceFormat
+    except Exception as exc:
+        return False, f"OpenGL imports unavailable: {exc}"
+
+    app = QApplication.instance()
+    if app is None:
+        return False, "QApplication not initialized"
+
+    try:
+        fmt = QSurfaceFormat()
+        fmt.setRenderableType(QSurfaceFormat.OpenGL)
+        fmt.setVersion(2, 1)
+        fmt.setProfile(QSurfaceFormat.NoProfile)
+
+        surface = QOffscreenSurface()
+        surface.setFormat(fmt)
+        surface.create()
+        if not surface.isValid():
+            return False, "Offscreen GL surface is invalid"
+
+        ctx = QOpenGLContext()
+        ctx.setFormat(fmt)
+        if not ctx.create():
+            return False, "OpenGL context creation failed"
+        if not ctx.makeCurrent(surface):
+            return False, "Could not make OpenGL context current"
+
+        gl_format = ctx.format()
+        major = gl_format.majorVersion()
+        minor = gl_format.minorVersion()
+        ctx.doneCurrent()
+        if major <= 0:
+            return False, "OpenGL version unavailable"
+
+        return True, f"OpenGL {major}.{minor}"
+    except Exception as exc:
+        return False, f"OpenGL probe failed: {exc}"

@@ -1,6 +1,6 @@
 from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, pyqtSignal, QPoint, QSize, QEventLoop, QTimer, pyqtProperty, QRectF, QParallelAnimationGroup, QAbstractAnimation, QEvent
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QDialog, QLineEdit, QMessageBox, QFrame, QGridLayout, QListWidget, QListWidgetItem, QSizePolicy, QRadioButton, QButtonGroup, QApplication, QScrollArea
-from PyQt5.QtGui import QColor, QPixmap, QCursor, QPainter, QBrush, QPainterPath, QBitmap
+from PyQt5.QtGui import QColor, QPixmap, QCursor, QPainter, QBrush, QPainterPath, QBitmap, QFontMetrics
 import requests
 
 def create_rounded_pixmap(pixmap, radius=12, target_size=None):
@@ -259,7 +259,9 @@ class PlaylistItemWidget(QFrame):
         self.name_label.setStyleSheet(f"color: white; font-size: {font_size}px; font-weight: bold; background: transparent; padding: 8px;")
         self.name_label.setAlignment(Qt.AlignCenter)
         self.name_label.setWordWrap(True)
+        self.name_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.name_label.setMaximumHeight(120)  # Even more vertical space for title
+        self._update_name_label_layout()
         # Start hidden
         self.name_label.setVisible(False)
         vbox.addWidget(self.name_label, 0, Qt.AlignCenter)
@@ -348,6 +350,15 @@ class PlaylistItemWidget(QFrame):
     def sizeHint(self):
         return QSize(self.SQUARE_SIZE + 24, self.SQUARE_SIZE + 24)
 
+    def _update_name_label_layout(self):
+        label_width = max(120, self.overlay.width() - 24)
+        self.name_label.setFixedWidth(label_width)
+
+        metrics = QFontMetrics(self.name_label.font())
+        text_rect = metrics.boundingRect(0, 0, label_width - 16, 1000, Qt.TextWordWrap | Qt.AlignCenter, self.playlist.get('name', ''))
+        target_height = max(36, min(120, text_rect.height() + 10))
+        self.name_label.setFixedHeight(target_height)
+
     def _animate_hover_scale(self, target_scale):
         self.cover_scale_anim.stop()
         self.cover_scale_anim.setStartValue(self.cover_label.scale)
@@ -428,6 +439,7 @@ class PlaylistItemWidget(QFrame):
 
     def enterEvent(self, event):
         self.hovered = True
+        self._update_name_label_layout()
         self._animate_overlay_opacity(0.9)
         self._animate_hover_scale(1.08)
         # Show buttons and text on hover
@@ -447,6 +459,10 @@ class PlaylistItemWidget(QFrame):
         self.shuffle_btn.setVisible(False)
         self.delete_btn.setVisible(False)
         super().leaveEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_name_label_layout()
 
     def _on_play(self):
         if self.panel and hasattr(self.panel, 'playlist_selected'):
@@ -928,6 +944,16 @@ class PlaylistPanel(QWidget):
         max_viewport_height = max(1, max_panel_height - vertical_padding)
         row_stride = self.ITEM_HEIGHT + self.GRID_SPACING
         max_visible_rows = max(1, (max_viewport_height + self.GRID_SPACING) // row_stride)
+        is_vertical_1080p = (
+            screen_width <= 1080 and screen_height >= 1920 and screen_height > screen_width
+        )
+        is_ultrawide_1440p = (
+            screen_height >= 1440 and screen_width >= 3000 and (screen_width / max(1, screen_height)) >= 2.3
+        )
+        if is_vertical_1080p:
+            max_visible_rows += 1
+        if is_ultrawide_1440p:
+            max_visible_rows += 1
         visible_rows = min(rows, max_visible_rows)
         viewport_height = (visible_rows * self.ITEM_HEIGHT) + max(0, visible_rows - 1) * self.GRID_SPACING
         target_height = viewport_height + vertical_padding
@@ -1138,6 +1164,8 @@ class AddPlaylistOrAlbumDialog(QDialog):
             {scrollbar_style}
             """
         )
+        self.list_widget.setWordWrap(True)
+        self.list_widget.setUniformItemSizes(False)
         self.list_widget.setMinimumHeight(400)
         self.list_widget.setMinimumWidth(500)
         
@@ -1156,6 +1184,9 @@ class AddPlaylistOrAlbumDialog(QDialog):
             list_item = QListWidgetItem(display_text)
             list_item.setData(Qt.UserRole, item['id'])
             list_item.setData(Qt.UserRole + 1, item_type)
+            metrics = QFontMetrics(self.list_widget.font())
+            text_rect = metrics.boundingRect(0, 0, self.list_widget.viewport().width() - 36, 1000, Qt.TextWordWrap, display_text)
+            list_item.setSizeHint(QSize(self.list_widget.viewport().width() - 20, max(28, text_rect.height() + 10)))
             self.list_widget.addItem(list_item)
         container_layout.addWidget(self.list_widget)
         self.list_widget.itemClicked.connect(self._on_item_clicked)

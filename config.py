@@ -14,4 +14,13 @@ GITHUB_REPO = "Dynamic-Player"
 GITHUB_TOKEN = "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"
 
 # --- NEW: App Version ---
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
+
+# Background rendering configuration.
+# OpenGL is preferred where safe for smooth, low-CPU lava-lamp animation.
+ENABLE_OPENGL_BACKGROUND = True
+FORCE_RASTER_BACKGROUND = False
+BACKGROUND_TARGET_FPS = 30
+LAVA_LAMP_INTENSITY = 1.0
+LAVA_LAMP_PRESET = "balanced"
+MAX_SHADER_BLOB_COLORS = 8

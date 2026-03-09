@@ -43,6 +43,7 @@ uniform float u_blobHaloMix;
 uniform float u_blobSoftMix;
 uniform float u_blobMistMix;
 uniform float u_finalBasePull;
+uniform float u_globalOpacity;
 uniform int u_paletteSize;
 uniform vec3 u_palette0;
 uniform vec3 u_palette1;
@@ -95,7 +96,7 @@ vec2 flow_warp(vec2 p, float t) {
         fbm(p * 2.1 + q * 1.6 + vec2(1.7, 9.2 + t * 0.07)),
         fbm(p * 2.1 + q * 1.6 + vec2(8.3, 2.8 - t * 0.08))
     );
-    return (q - 0.5) * (0.14 * u_warpAmount) + (r - 0.5) * (0.10 * u_warpAmount);
+    return (q - 0.5) * (0.18 * u_warpAmount) + (r - 0.5) * (0.14 * u_warpAmount);
 }
 
 vec2 blob_center(float i, float t) {
@@ -166,13 +167,13 @@ void main() {
         vec3 baseColorForIndex = get_palette_color(i);
 
         // Render multiple blobs per color so the whole screen stays active and dynamic.
-        for (int j = 0; j < 3; ++j) {
+        for (int j = 0; j < 4; ++j) {
             float fj = float(j);
-            float idx = fi * 3.0 + fj;
+            float idx = fi * 4.0 + fj;
 
             vec3 blobColor = baseColorForIndex;
             // Include base background color into one instance to preserve overall dominance.
-            if (j == 2) {
+            if (j == 3) {
                 blobColor = mix(baseColorForIndex, u_baseColor, 0.62);
             }
 
@@ -181,28 +182,33 @@ void main() {
             vec2 c = blob_center(fi + 1.0 + fj * 0.41 + phase, t * speed);
 
             // Wide offsets in normalized coordinates to keep edges alive on ultrawide/tall screens.
-            vec2 spread = vec2((fj - 1.0) * 0.52, (mod(fi + fj, 3.0) - 1.0) * 0.30);
+            vec2 spread = vec2((fj - 1.5) * 0.50, (mod(fi + fj, 3.0) - 1.0) * 0.30);
             spread += vec2(
-                0.16 * sin(t * (0.21 + 0.05 * speed) + phase),
-                0.14 * cos(t * (0.18 + 0.04 * speed) + phase * 0.7)
+                0.22 * sin(t * (0.24 + 0.06 * speed) + phase),
+                0.20 * cos(t * (0.21 + 0.05 * speed) + phase * 0.7)
             );
             c += spread;
-            c = clamp(c, vec2(0.02, 0.02), vec2(0.98, 0.98));
+            c = clamp(c, vec2(0.01, 0.01), vec2(0.99, 0.99));
 
-            float wobble = 0.05 * sin(t * (0.36 + 0.06 * speed) + idx * 2.3 + phase);
+            float wobble = 0.08 * sin(t * (0.42 + 0.08 * speed) + idx * 2.3 + phase);
             // Noticeably larger ellipses for stronger full-window coverage.
-            vec2 axis = vec2(0.30 - 0.03 * fj, 0.21 + wobble + 0.02 * fj);
+            vec2 axis = vec2(0.40 - 0.03 * fj, 0.29 + wobble + 0.02 * fj);
             float angle = t * (0.06 + 0.022 * speed) + idx * 1.17 + phase * 0.35;
 
             float f = ellipse_field(uvw, c, axis, angle, aspect) * (0.90 + 0.18 * sin(t * (0.42 + 0.08 * speed) + idx));
 
             float body = smoothstep(0.08, 0.50, f * u_intensity);
-            float halo = smoothstep(0.015, 0.20, f * u_intensity * 0.95);
-            float soft = smoothstep(0.00, 0.10, f * u_intensity * 0.90);
-            float mist = smoothstep(0.00, 0.07, f * u_intensity * 0.82);
+            float core = smoothstep(0.26, 0.82, f * u_intensity);
+            float halo = smoothstep(0.010, 0.18, f * u_intensity * 0.95);
+            float soft = smoothstep(0.00, 0.12, f * u_intensity * 0.92);
+            float mist = smoothstep(0.00, 0.09, f * u_intensity * 0.86);
+            vec2 gel_vec = (uvw - c) * vec2(aspect, 1.0) + vec2(0.20, -0.18);
+            float gel_highlight = core * smoothstep(0.30, 0.02, length(gel_vec));
             float glow = halo * 0.58 + soft * 0.30 + mist * 0.12;
 
             col = mix(col, blobColor, body * u_blobCoreMix);
+            col = mix(col, blobColor, core * min(1.0, u_blobCoreMix * 1.18));
+            col += mix(blobColor, vec3(1.0), 0.58) * gel_highlight * 0.11;
             col += blobColor * halo * u_blobHaloMix;
             col += blobColor * soft * u_blobSoftMix;
             col += blobColor * mist * u_blobMistMix;
@@ -211,16 +217,20 @@ void main() {
         }
     }
 
-    float layer_mix = smoothstep(0.08, 1.30, totalField / 2.8);
+    float layer_mix = smoothstep(0.04, 1.05, totalField / 2.6);
     col = mix(col, mix(u_baseColor, ambient, 0.24), layer_mix * 0.08);
 
     float vignette = smoothstep(1.20, 0.20, length(centered_vig));
     col = mix(col * 0.70, col, vignette);
     col += ambient * min(totalGlow * 0.035, 0.06);
 
+    // Keep a persistent ambient tint so black only acts as tone, not visible gaps.
+    col = mix(col, mix(ambient, u_baseColor, 0.42), 0.18);
+
     // Final pull toward base color so the background still reads as the dominant tone.
     col = mix(col, u_baseColor, u_finalBasePull);
     col = clamp(col, 0.0, 1.0);
+    col *= u_globalOpacity;
 
     gl_FragColor = vec4(col, 1.0);
 }
@@ -229,34 +239,34 @@ void main() {
 
 PRESET_SETTINGS = {
     "ultra_soft": {
-        "warp": 1.25,
-        "base_dom": 0.66,
-        "ambient": 0.10,
-        "core": 0.20,
-        "halo": 0.035,
-        "soft": 0.018,
-        "mist": 0.014,
-        "final_base": 0.52,
+        "warp": 1.48,
+        "base_dom": 0.54,
+        "ambient": 0.16,
+        "core": 0.44,
+        "halo": 0.050,
+        "soft": 0.028,
+        "mist": 0.018,
+        "final_base": 0.30,
     },
     "balanced": {
-        "warp": 1.0,
-        "base_dom": 0.58,
-        "ambient": 0.16,
-        "core": 0.30,
-        "halo": 0.05,
-        "soft": 0.025,
-        "mist": 0.015,
-        "final_base": 0.42,
+        "warp": 1.22,
+        "base_dom": 0.52,
+        "ambient": 0.22,
+        "core": 0.58,
+        "halo": 0.082,
+        "soft": 0.048,
+        "mist": 0.024,
+        "final_base": 0.26,
     },
     "color_pop": {
-        "warp": 0.92,
-        "base_dom": 0.48,
-        "ambient": 0.22,
-        "core": 0.42,
-        "halo": 0.075,
-        "soft": 0.04,
-        "mist": 0.025,
-        "final_base": 0.32,
+        "warp": 1.10,
+        "base_dom": 0.40,
+        "ambient": 0.28,
+        "core": 0.70,
+        "halo": 0.100,
+        "soft": 0.056,
+        "mist": 0.032,
+        "final_base": 0.20,
     },
 }
 
@@ -282,16 +292,79 @@ class LavaLampGLWidget(QOpenGLWidget):
         self._time_offset = 0.0
         self._paused = False
         self._paused_time = 0.0
+        self._frame_interval_ms = 28
+        self._last_update_ms = -1
         self._palette = [QColor(29, 185, 84), QColor(15, 120, 50), QColor(60, 210, 130)]
+        self._palette_from = [QColor(c) for c in self._palette]
+        self._palette_to = [QColor(c) for c in self._palette]
+        self._palette_transition_start_ms = -1
+        self._palette_transition_duration_ms = 1200
         self._base_color = QColor(0, 0, 0)
+        self._global_opacity = 1.0
         self._intensity = max(0.2, float(intensity))
         self._style_preset = "balanced"
         self._preset_params = dict(PRESET_SETTINGS["balanced"])
 
+    def _normalize_palette(self, colors):
+        normalized = [QColor(c) for c in (colors or []) if QColor(c).isValid()]
+        if not normalized:
+            normalized = [QColor(29, 185, 84)]
+        return normalized[:8]
+
+    def _palette_progress(self):
+        if self._palette_transition_start_ms < 0:
+            return 1.0
+        elapsed = self._elapsed.elapsed() - self._palette_transition_start_ms
+        if elapsed <= 0:
+            return 0.0
+        return min(1.0, float(elapsed) / float(max(1, self._palette_transition_duration_ms)))
+
+    def _get_palette_entry(self, palette, index):
+        if not palette:
+            return QColor(29, 185, 84)
+        return palette[min(index, len(palette) - 1)]
+
+    def _mix_color(self, color_a, color_b, t):
+        inv_t = 1.0 - t
+        return QColor(
+            int(color_a.red() * inv_t + color_b.red() * t),
+            int(color_a.green() * inv_t + color_b.green() * t),
+            int(color_a.blue() * inv_t + color_b.blue() * t),
+        )
+
+    def _current_palette(self):
+        progress = self._palette_progress()
+        if progress >= 1.0:
+            if self._palette_transition_start_ms >= 0:
+                self._palette_transition_start_ms = -1
+                self._palette_from = [QColor(c) for c in self._palette_to]
+            return [QColor(c) for c in self._palette_to]
+
+        count = max(len(self._palette_from), len(self._palette_to))
+        blended = []
+        for idx in range(max(1, count)):
+            from_color = self._get_palette_entry(self._palette_from, idx)
+            to_color = self._get_palette_entry(self._palette_to, idx)
+            blended.append(self._mix_color(from_color, to_color, progress))
+        return blended
+
     def set_palette(self, colors):
-        self._palette = [QColor(c) for c in (colors or []) if QColor(c).isValid()]
-        if not self._palette:
-            self._palette = [QColor(29, 185, 84)]
+        next_palette = self._normalize_palette(colors)
+        current_palette = self._current_palette()
+        if len(current_palette) == len(next_palette) and all(
+            current_palette[i].rgba() == next_palette[i].rgba() for i in range(len(next_palette))
+        ):
+            self._palette = [QColor(c) for c in next_palette]
+            self._palette_from = [QColor(c) for c in next_palette]
+            self._palette_to = [QColor(c) for c in next_palette]
+            self._palette_transition_start_ms = -1
+            self.update()
+            return
+
+        self._palette_from = [QColor(c) for c in current_palette]
+        self._palette_to = [QColor(c) for c in next_palette]
+        self._palette = [QColor(c) for c in next_palette]
+        self._palette_transition_start_ms = self._elapsed.elapsed()
         self.update()
 
     def set_base_color(self, color):
@@ -299,6 +372,10 @@ class LavaLampGLWidget(QOpenGLWidget):
         if not qcolor.isValid():
             return
         self._base_color = qcolor
+
+    def set_global_opacity(self, value):
+        self._global_opacity = max(0.0, min(1.0, float(value)))
+        self.update()
 
     def set_intensity(self, value):
         self._intensity = max(0.2, float(value))
@@ -314,6 +391,10 @@ class LavaLampGLWidget(QOpenGLWidget):
     def advance(self):
         if self._paused:
             return
+        now_ms = self._elapsed.elapsed()
+        if self._last_update_ms >= 0 and (now_ms - self._last_update_ms) < self._frame_interval_ms:
+            return
+        self._last_update_ms = now_ms
         self.update()
 
     def _current_time(self):
@@ -332,6 +413,7 @@ class LavaLampGLWidget(QOpenGLWidget):
         # Keep shader time continuous when refocusing so blobs do not jump.
         self._time_offset = self._paused_time - (self._elapsed.elapsed() / 1000.0)
         self._paused = False
+        self._last_update_ms = -1
         self.update()
 
     def initializeGL(self):
@@ -417,8 +499,10 @@ class LavaLampGLWidget(QOpenGLWidget):
         funcs.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
         funcs.glClear(GL_COLOR_BUFFER_BIT)
 
+        active_palette = self._current_palette()
+
         palette_vec = []
-        for color in self._palette[:8]:
+        for color in active_palette[:8]:
             palette_vec.append(QVector3D(color.redF(), color.greenF(), color.blueF()))
         while len(palette_vec) < 8:
             palette_vec.append(QVector3D(0.0, 0.0, 0.0))
@@ -438,7 +522,8 @@ class LavaLampGLWidget(QOpenGLWidget):
         self._program.setUniformValue("u_blobSoftMix", float(self._preset_params["soft"]))
         self._program.setUniformValue("u_blobMistMix", float(self._preset_params["mist"]))
         self._program.setUniformValue("u_finalBasePull", float(self._preset_params["final_base"]))
-        self._program.setUniformValue("u_paletteSize", int(min(8, len(self._palette))))
+        self._program.setUniformValue("u_globalOpacity", float(self._global_opacity))
+        self._program.setUniformValue("u_paletteSize", int(min(8, len(active_palette))))
         self._program.setUniformValue("u_palette0", palette_vec[0])
         self._program.setUniformValue("u_palette1", palette_vec[1])
         self._program.setUniformValue("u_palette2", palette_vec[2])

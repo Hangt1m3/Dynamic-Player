@@ -510,6 +510,7 @@ class ColorEditorDialog(QDialog):
         self._current_styles_family = None
         self.ui_labels = []
         self._loading_state = False
+        self._is_closing_via_save = False
 
         # Event filter for applying borders to all standard widgets
         self.ui_event_filter = LabelBorderEventFilter(False, "black", 3, "white", self)
@@ -529,10 +530,9 @@ class ColorEditorDialog(QDialog):
         
         # --- 1. LOAD INITIAL STATE ---
         ui_palette = cached_data.get("ui_palette", main_window_state._current_ui_palette or [[30, 30, 30], [100, 100, 100]])
-        player_bg_color_rgb = cached_data.get("player_bg_color")
 
         # Initialize UI Colors first to calculate dependent auto colors correctly
-        self.ui_bg_color = QColor(*player_bg_color_rgb) if player_bg_color_rgb else QColor(*ui_palette[0])
+        self.ui_bg_color = QColor(*ui_palette[0])
         self.ui_accent_color = QColor(*ui_palette[1]) if len(ui_palette) > 1 else self.ui_bg_color.lighter(150)
 
         text_color_rgb = cached_data.get("text_color") # Get raw value
@@ -647,7 +647,7 @@ class ColorEditorDialog(QDialog):
 
         self.current_art_pixmap = album_art_pixmap
         # --- Initialize Auto Flags ---
-        self.is_bg_auto = "ui_palette" not in cached_data and "player_bg_color" not in cached_data
+        self.is_bg_auto = True
         self.is_accent_auto = "ui_palette" not in cached_data
         self.is_blob_auto = "blob_palette" not in cached_data
         self.is_lights_auto = "lights_config" not in cached_data
@@ -661,6 +661,7 @@ class ColorEditorDialog(QDialog):
                 self.ui_accent_color.lighter(120),
                 self.ui_accent_color.darker(120)
             ]
+        self._sync_primary_tone_from_blobs()
 
         # --- STORE INITIAL STATE FOR 'SAVE ONLY CHANGES' LOGIC ---
         self.initial_ui_bg_color = QColor(self.ui_bg_color)
@@ -725,6 +726,11 @@ class ColorEditorDialog(QDialog):
         # Start Build Sequence
         self._build_generator = self._ui_build_steps()
         QTimer.singleShot(10, self._process_build_step)
+
+    def _sync_primary_tone_from_blobs(self):
+        """Primary UI tone is derived from blob colors, not user-edited directly."""
+        if self.blob_colors:
+            self.ui_bg_color = QColor(self.blob_colors[0])
 
     def _process_build_step(self):
         if not self._build_generator: return
@@ -1183,6 +1189,61 @@ class ColorEditorDialog(QDialog):
         credentials_tab_layout.addWidget(credentials_scroll)
         self.tab_widget.addTab(credentials_tab, "Connections")
 
+        method_group = QGroupBox("Media Methods")
+        method_layout = QVBoxLayout(method_group)
+        method_layout.setContentsMargins(10, 10, 10, 10)
+        method_layout.setSpacing(10)
+
+        self.spotify_method_checkbox = None
+        self.apple_music_method_checkbox = None
+        self.windows_media_method_checkbox = QCheckBox("Enable Windows Media Sessions")
+        self.windows_media_method_checkbox.setChecked(settings.value("windows_media_method_enabled", "true") == "true")
+        method_layout.addWidget(self.windows_media_method_checkbox)
+
+        spotify_has_creds = bool(str(self.initial_spotify_id).strip() and str(self.initial_spotify_secret).strip())
+        if spotify_has_creds:
+            self.spotify_method_checkbox = QCheckBox("Enable Spotify Method")
+            self.spotify_method_checkbox.setChecked(settings.value("spotify_method_enabled", "true") == "true")
+            method_layout.addWidget(self.spotify_method_checkbox)
+        else:
+            spotify_hint = self._create_dynamic_label(
+                "Spotify credentials are missing. Add Client ID and Client Secret below to enable Spotify.",
+                is_html_or_wrapped=True,
+            )
+            spotify_hint.setWordWrap(True)
+            method_layout.addWidget(spotify_hint)
+            spotify_focus_btn = QPushButton("Set Up Spotify Credentials")
+            spotify_focus_btn.clicked.connect(lambda: self.spotify_id_input.setFocus())
+            method_layout.addWidget(spotify_focus_btn)
+
+        apple_has_creds = bool(
+            str(self.initial_apple_music_team_id).strip()
+            and str(self.initial_apple_music_key_id).strip()
+            and str(self.initial_apple_music_private_key).strip()
+        )
+        if apple_has_creds:
+            self.apple_music_method_checkbox = QCheckBox("Enable Apple Music Method")
+            self.apple_music_method_checkbox.setChecked(settings.value("apple_music_method_enabled", "true") == "true")
+            method_layout.addWidget(self.apple_music_method_checkbox)
+        else:
+            apple_hint = self._create_dynamic_label(
+                "Apple Music credentials are missing. Add Team ID, Key ID, and Private Key below to enable Apple Music.",
+                is_html_or_wrapped=True,
+            )
+            apple_hint.setWordWrap(True)
+            method_layout.addWidget(apple_hint)
+            apple_focus_btn = QPushButton("Set Up Apple Music Credentials")
+            apple_focus_btn.clicked.connect(lambda: self.apple_music_team_id_input.setFocus())
+            method_layout.addWidget(apple_focus_btn)
+
+        windows_hint = self._create_dynamic_label(
+            "Windows media sessions can show playback, but they never control lights.",
+            is_html_or_wrapped=True,
+        )
+        windows_hint.setWordWrap(True)
+        method_layout.addWidget(windows_hint)
+        credentials_layout.addWidget(method_group)
+
         spotify_group = QGroupBox("Spotify Connection")
         spotify_layout = QFormLayout(spotify_group)
         spotify_layout.setSpacing(12)
@@ -1469,8 +1530,8 @@ class ColorEditorDialog(QDialog):
         ui_colors_layout.setContentsMargins(0,0,0,0)
         ui_colors_layout.setSpacing(12)
         
-        self.ui_bg_preview, pick_ui_bg_btn, self.reset_ui_bg_btn = self._create_color_picker(self.ui_bg_color, self.pick_ui_bg_color, self.reset_ui_bg_color)
-        ui_colors_layout.addRow(self._create_label("Player Background:"), self.create_color_row(self.ui_bg_preview, pick_ui_bg_btn, self.reset_ui_bg_btn))
+        self.ui_bg_preview, _, _ = self._create_color_picker(self.ui_bg_color, lambda: None, None)
+        ui_colors_layout.addRow(self._create_label("Primary Tone (from Blob 1):"), self.ui_bg_preview)
         self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn = self._create_color_picker(self.ui_accent_color, self.pick_ui_accent_color, self.reset_ui_accent_color)
         ui_colors_layout.addRow(self._create_label("Accent / Art Frame:"), self.create_color_row(self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn))
         ui_group_layout.addWidget(ui_colors_widget)
@@ -2526,7 +2587,6 @@ class ColorEditorDialog(QDialog):
             self.update_previews()
 
     def _update_bg_accent_buttons(self):
-        self.reset_ui_bg_btn.setEnabled(not self.is_bg_auto)
         self.reset_ui_accent_btn.setEnabled(not self.is_accent_auto)
 
     def update_previews(self):
@@ -2584,18 +2644,10 @@ class ColorEditorDialog(QDialog):
         self.update() 
 
     def pick_ui_bg_color(self):
-        new_color = self._get_themed_color(self.ui_bg_color, "Select Player Background")
-        if new_color.isValid():
-            self.ui_bg_color = new_color
-            self.is_bg_auto = False
-            self._update_bg_accent_buttons()
-            self._update_auto_text_color()
-            self.update_previews()
-            self.update_stylesheet()
+        return
 
     def reset_ui_bg_color(self):
-        self.is_bg_auto = True
-        self.regenerate_theme()
+        return
     
     def pick_ui_accent_color(self):
         new_color = self._get_themed_color(self.ui_accent_color, "Select Art Border Color")
@@ -2706,6 +2758,7 @@ class ColorEditorDialog(QDialog):
         new_color = last_color.lighter(110)
         self.blob_colors.append(new_color)
         self.is_blob_auto = False
+        self._sync_primary_tone_from_blobs()
         self.refresh_blob_rows()
         self._update_blob_buttons_style() # Ensure new button is styled
         self.update_previews()
@@ -2714,6 +2767,7 @@ class ColorEditorDialog(QDialog):
         if len(self.blob_colors) <= 1: return
         self.blob_colors.pop(index)
         self.is_blob_auto = False; QApplication.processEvents()
+        self._sync_primary_tone_from_blobs()
         self.refresh_blob_rows()
         self._update_blob_buttons_style()
         self.update_previews()
@@ -2747,6 +2801,7 @@ class ColorEditorDialog(QDialog):
         if new_color.isValid():
             self.blob_colors[index] = new_color
             self.is_blob_auto = False
+            self._sync_primary_tone_from_blobs()
             self.update_previews()
 
     def reset_blobs_to_auto(self):
@@ -2906,6 +2961,8 @@ class ColorEditorDialog(QDialog):
         if self.is_blob_auto:
             self.blob_colors = [QColor(*c) for c in blob_palette]
             self.refresh_blob_rows()
+
+        self._sync_primary_tone_from_blobs()
         
         if self.is_lights_auto:
             for i, picker in enumerate(self.govee_color_pickers):
@@ -3011,8 +3068,9 @@ class ColorEditorDialog(QDialog):
             return [int(c) for c in val[:3]]
 
         # --- Background ---
-        bg_rgb = safe_rgb(data.get("player_bg_color"))
-        if not bg_rgb and "ui_palette" in data: bg_rgb = safe_rgb(data["ui_palette"][0])
+        bg_rgb = None
+        if "ui_palette" in data:
+            bg_rgb = safe_rgb(data["ui_palette"][0])
         if not bg_rgb: bg_rgb = [40, 40, 40]
         bg_color = QColor(*bg_rgb)
 
@@ -3289,9 +3347,7 @@ class ColorEditorDialog(QDialog):
             
             # --- Update Internal State ---
             ui_palette = self.cached_data.get("ui_palette", main_window_state._current_ui_palette or [[30, 30, 30], [100, 100, 100]])
-            player_bg_rgb = self.cached_data.get("player_bg_color")
-            
-            self.ui_bg_color = QColor(*player_bg_rgb) if player_bg_rgb else QColor(*ui_palette[0])
+            self.ui_bg_color = QColor(*ui_palette[0])
             self.ui_accent_color = QColor(*ui_palette[1]) if len(ui_palette) > 1 else self.ui_bg_color.lighter(150)
             
             text_color_rgb = self.cached_data.get("text_color")
@@ -3310,6 +3366,7 @@ class ColorEditorDialog(QDialog):
             self.blob_colors = [QColor(*c) for c in blob_palette]
             if not self.blob_colors:
                 self.blob_colors = [self.ui_accent_color, self.ui_accent_color.lighter(120), self.ui_accent_color.darker(120)]
+            self._sync_primary_tone_from_blobs()
                 
             # Update Lights
             lights_config = self.cached_data.get("lights_config", {})
@@ -3485,7 +3542,7 @@ class ColorEditorDialog(QDialog):
                 self.disabled_info_label.hide()
 
             # Reset Auto Flags
-            self.is_bg_auto = "ui_palette" not in self.cached_data and "player_bg_color" not in self.cached_data
+            self.is_bg_auto = True
             self.is_accent_auto = "ui_palette" not in self.cached_data
             self.is_blob_auto = "blob_palette" not in self.cached_data
             self.is_lights_auto = "lights_config" not in self.cached_data
@@ -3618,6 +3675,11 @@ class ColorEditorDialog(QDialog):
 
         # --- NEW: Check Override ---
         check("govee_brightness_override", "Lights: Mobile App Brightness Control", self.govee_override_checkbox.isChecked(), False, bool)
+        if self.spotify_method_checkbox is not None:
+            check("spotify_method_enabled", "Media Methods: Spotify", self.spotify_method_checkbox.isChecked(), True, bool)
+        if self.apple_music_method_checkbox is not None:
+            check("apple_music_method_enabled", "Media Methods: Apple Music", self.apple_music_method_checkbox.isChecked(), True, bool)
+        check("windows_media_method_enabled", "Media Methods: Windows Sessions", self.windows_media_method_checkbox.isChecked(), True, bool)
 
         return changes
 
@@ -3644,8 +3706,15 @@ class ColorEditorDialog(QDialog):
                 potential_saves.append({"key": key, "label": label, "value": current_val, "changed": changed or in_cache or always_save, "type": "theme"})
 
         # Gather all potential settings
-        check_auto("ui_palette", "Track Theme: Core Colors", self.is_bg_auto and self.is_accent_auto, [list(self.ui_bg_color.getRgb()[:3]), list(self.ui_accent_color.getRgb()[:3])], [list(self.initial_ui_bg_color.getRgb()[:3]), list(self.initial_ui_accent_color.getRgb()[:3])])
-        check_auto("player_bg_color", "Track Theme: Player Background", self.is_bg_auto, list(self.ui_bg_color.getRgb()[:3]), list(self.initial_ui_bg_color.getRgb()[:3]))
+        current_primary = list((self.blob_colors[0] if self.blob_colors else self.ui_bg_color).getRgb()[:3])
+        initial_primary = list((self.initial_blob_colors[0] if self.initial_blob_colors else self.initial_ui_bg_color).getRgb()[:3])
+        check_auto(
+            "ui_palette",
+            "Track Theme: Core Colors",
+            self.is_accent_auto,
+            [current_primary, list(self.ui_accent_color.getRgb()[:3])],
+            [initial_primary, list(self.initial_ui_accent_color.getRgb()[:3])],
+        )
         check_auto("blob_palette", "Track Theme: Blob Colors", self.is_blob_auto, [list(c.getRgb()[:3]) for c in self.blob_colors], [list(c.getRgb()[:3]) for c in self.initial_blob_colors])
         check_manual("shadow_enabled", "Track Theme: Text Shadow", self.shadow_checkbox.isChecked(), self.initial_shadow_enabled)
         check_manual("album_art_border_enabled", "Track Theme: Artwork Frame", self.album_art_border_checkbox.isChecked(), self.initial_album_art_border_enabled)
@@ -3718,14 +3787,15 @@ class ColorEditorDialog(QDialog):
 
     def save_full_theme(self):
         """Snapshots the exact current state of the panel and saves it as the theme."""
+        self._is_closing_via_save = True
         
         # Build configuration from CURRENT UI state (ignoring "auto" flags)
         album_config = {}
 
         # 1. Colors & Palette
-        album_config["player_bg_color"] = list(self.ui_bg_color.getRgb()[:3])
+        primary_tone = list((self.blob_colors[0] if self.blob_colors else self.ui_bg_color).getRgb()[:3])
         album_config["ui_palette"] = [
-            list(self.ui_bg_color.getRgb()[:3]),
+            primary_tone,
             list(self.ui_accent_color.getRgb()[:3])
         ]
         album_config["text_color"] = list(self.ui_text_color.getRgb()[:3])
@@ -3799,6 +3869,7 @@ class ColorEditorDialog(QDialog):
         self.accept()
 
     def save_and_close(self, quick=False):
+        self._is_closing_via_save = True
         # 1. Collect all changes from UI controls
         global_changes = self._get_global_changes()        
         theme_changes = []

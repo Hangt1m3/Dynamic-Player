@@ -723,6 +723,10 @@ class PlaylistPanel(QWidget):
         self._show_add_square = True  # Always show add square now (scrollable)
         self._current_columns = 4  # Default, will be calculated dynamically
         self._scroll_step = self.ITEM_HEIGHT + self.GRID_SPACING
+        self._relayout_timer = QTimer(self)
+        self._relayout_timer.setSingleShot(True)
+        self._relayout_timer.setInterval(60)
+        self._relayout_timer.timeout.connect(self.relayout)
         
         # Set initial size - don't use setFixedWidth here, let _update_size handle it
         self.setMinimumWidth(self.PANEL_WIDTH)
@@ -828,46 +832,50 @@ class PlaylistPanel(QWidget):
         self._playlists = [pl for pl in self._playlists if pl.get('id') != playlist_id]
         self.set_playlists(self._playlists)
 
+    def request_relayout(self, delay_ms=60):
+        self._relayout_timer.start(max(0, int(delay_ms)))
+
+    def _clear_playlist_grid(self):
+        while self.playlist_grid.count():
+            item = self.playlist_grid.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _populate_playlist_grid(self):
+        total_items = len(self._playlists) + 1
+        columns = self._current_columns
+        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 1
+
+        for idx, pl in enumerate(self._playlists):
+            row = idx // columns
+            col = idx % columns
+            display_row = total_rows - row - 1
+            widget = PlaylistItemWidget(pl, panel=self, parent=self.playlist_container)
+            self.playlist_grid.addWidget(widget, display_row, col, alignment=Qt.AlignHCenter)
+
+        add_idx = len(self._playlists)
+        row = add_idx // columns
+        col = add_idx % columns
+        display_row = total_rows - row - 1
+        add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
+        self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
+
     def relayout(self):
         """Force a relayout of the grid without changing playlist contents.
         
         Call this when the window is resized or monitor changes to recalculate
         the grid dimensions. Add button is always shown (panel is scrollable).
         """
+        if self._relayout_timer.isActive():
+            self._relayout_timer.stop()
+
         # Recalculate size first (this updates _current_columns)
         self._update_size()
-        
-        # Clear and repopulate the grid with current playlists
-        while self.playlist_grid.count():
-            item = self.playlist_grid.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-        
-        # Calculate total number of items (always include add button)
-        total_items = len(self._playlists) + 1
-        
-        # Use dynamically calculated columns from _update_size
-        columns = self._current_columns
-        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 1
-        
-        # Add all playlists in order to the grid
-        for idx, pl in enumerate(self._playlists):
-            row = idx // columns
-            col = idx % columns
-            # Reverse row order so items grow upward (new rows appear at top)
-            display_row = total_rows - row - 1
-            widget = PlaylistItemWidget(pl, panel=self, parent=self.playlist_container)
-            self.playlist_grid.addWidget(widget, display_row, col, alignment=Qt.AlignHCenter)
-        
-        # ALWAYS add the "Add Playlist" square at the end
-        add_idx = len(self._playlists)
-        row = add_idx // columns
-        col = add_idx % columns
-        # Reverse row order for add button too
-        display_row = total_rows - row - 1
-        add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
-        self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
+        self._clear_playlist_grid()
+        self._populate_playlist_grid()
         
         # Final size adjustment after widgets are added
         self._update_size()
@@ -984,41 +992,13 @@ class PlaylistPanel(QWidget):
 
     def set_playlists(self, playlists, skip_save=False):
         self._playlists = playlists
+        if self._relayout_timer.isActive():
+            self._relayout_timer.stop()
         
         # First, calculate columns and size based on available space
         self._update_size()
-        
-        # Repopulate the playlist grid (always show add button)
-        while self.playlist_grid.count():
-            item = self.playlist_grid.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-
-        # Calculate total number of items (always include add button)
-        total_items = len(self._playlists) + 1
-        
-        # Use dynamically calculated columns from _update_size
-        columns = self._current_columns
-        total_rows = (total_items + columns - 1) // columns if total_items > 0 else 1
-        
-        # Add all playlists in order to the grid
-        for idx, pl in enumerate(self._playlists):
-            row = idx // columns
-            col = idx % columns
-            # Reverse row order so items grow upward (new rows appear at top)
-            display_row = total_rows - row - 1
-            widget = PlaylistItemWidget(pl, panel=self, parent=self.playlist_container)
-            self.playlist_grid.addWidget(widget, display_row, col, alignment=Qt.AlignHCenter)
-        
-        # ALWAYS add the "Add Playlist" square at the end
-        add_idx = len(self._playlists)
-        row = add_idx // columns
-        col = add_idx % columns
-        # Reverse row order for add button too
-        display_row = total_rows - row - 1
-        add_widget = AddPlaylistSquareWidget(panel=self, parent=self.playlist_container)
-        self.playlist_grid.addWidget(add_widget, display_row, col, alignment=Qt.AlignHCenter)
+        self._clear_playlist_grid()
+        self._populate_playlist_grid()
         
         # Recalculate size after all widgets are added
         self._update_size()

@@ -55,13 +55,11 @@ class BlobManager:
 
     def adjust_blob_count(self):
         if not self.palette: return
-        # QColor is not hashable, so we use rgba() to count unique colors
-        unique_colors = set(c.rgba() for c in self.palette)
-        variety_count = len(unique_colors)
-        # New Logic: Choose number of blobs based on color variety
-        # Minimum 2, Maximum 8. roughly 2 blobs per unique color in palette.
-        unique_colors_count = len(self.palette)
-        target_count = max(2, min(8, unique_colors_count * 2))
+        unique_colors_count = max(1, len(set(c.rgba() for c in self.palette)))
+        area = max(1, self.parent_size.width() * self.parent_size.height())
+        area_target = max(0, min(8, area // 650000))
+        # Keep a denser overlap so black stays tonal and not visibly exposed.
+        target_count = max(10, min(24, unique_colors_count * 3 + area_target))
 
         # Add blobs if we have too few
         while len(self.blobs) < target_count:
@@ -81,14 +79,15 @@ class BlobManager:
                 blob_to_remove.graceful_remove()
 
     def get_new_position(self, new_blob_radius):
-        for _ in range(20):
+        for _ in range(40):
             candidate_pos = QPointF(random.uniform(-0.3, 1.3) * self.parent_size.width(), random.uniform(-0.3, 1.3) * self.parent_size.height())
             is_overlapping_too_much = False
-            for other_blob in self.blobs:
-                if other_blob.animation_group.state() == QPropertyAnimation.Running:
-                    dist = np.linalg.norm(np.array([candidate_pos.x(), candidate_pos.y()]) - np.array([other_blob.center.x(), other_blob.center.y()]))
-                    if dist < (new_blob_radius + other_blob.radius) * 0.45:
-                        is_overlapping_too_much = True; break
+            for other_blob in self.blobs + self.dying_blobs:
+                if other_blob.opacity <= 0.15:
+                    continue
+                dist = np.linalg.norm(np.array([candidate_pos.x(), candidate_pos.y()]) - np.array([other_blob.center.x(), other_blob.center.y()]))
+                if dist < (new_blob_radius + other_blob.radius) * 0.74:
+                    is_overlapping_too_much = True; break
             if not is_overlapping_too_much: return candidate_pos
         return QPointF(random.uniform(0, 1) * self.parent_size.width(), random.uniform(0, 1) * self.parent_size.height())
 
@@ -122,7 +121,7 @@ class Blob(QObject):
         else: self.animation_group.start()
 
     def stop(self): self.animation_group.stop(); self.manager.remove_blob(self)
-    def on_animation_finish(self): self.reposition(); QTimer.singleShot(random.randint(0, 4000), self.animation_group.start)
+    def on_animation_finish(self): self.reposition(); QTimer.singleShot(random.randint(0, 900), self.animation_group.start)
     def handle_resize(self, w_ratio, h_ratio, scale_ratio):
         self.start_pos = QPointF(self.start_pos.x() * w_ratio, self.start_pos.y() * h_ratio)
         self.end_pos = QPointF(self.end_pos.x() * w_ratio, self.end_pos.y() * h_ratio)
@@ -131,11 +130,16 @@ class Blob(QObject):
         if not is_initial and self.manager.palette: self.color = random.choice(self.manager.palette)
         duration = random.randint(20000, 45000)
         ref_dim = min(self.manager.parent_size.width(), self.manager.parent_size.height())
-        self.radius = random.uniform(0.6, 1.2) * ref_dim 
+        self.radius = random.uniform(0.62, 1.08) * ref_dim 
         self.update_pixmap()
         self.start_pos = self.manager.get_new_position(self.radius); self.end_pos = self.manager.get_new_position(self.radius)
-        self.opacity_anim.setDuration(duration); self.opacity_anim.setStartValue(0.0 if not is_initial else self.opacity)
-        self.opacity_anim.setKeyValueAt(0.5, random.uniform(0.6, 0.9)); self.opacity_anim.setEndValue(0.0)
+        self.opacity_anim.setDuration(duration)
+        if is_initial:
+            self.opacity_anim.setStartValue(random.uniform(0.24, 0.40))
+        else:
+            self.opacity_anim.setStartValue(max(self.opacity, 0.18))
+        self.opacity_anim.setKeyValueAt(0.5, random.uniform(0.78, 0.96))
+        self.opacity_anim.setEndValue(0.18)
         self.drift_anim.setDuration(duration); self.drift_anim.setStartValue(0.0); self.drift_anim.setEndValue(1.0)
         self.scale_anim.setDuration(duration); self.scale_anim.setStartValue(random.uniform(0.8, 1.0)); self.scale_anim.setKeyValueAt(0.5, random.uniform(0.9, 1.2)); self.scale_anim.setEndValue(random.uniform(0.8, 1.0))
     def update_pixmap(self):
@@ -154,8 +158,33 @@ class Blob(QObject):
             return
         try:
             painter.setRenderHint(QPainter.Antialiasing)
-            gradient = QRadialGradient(size/2, size/2, size/2); gradient.setColorAt(0, self._color); gradient.setColorAt(1, Qt.transparent)
+            # Keep a visibly solid center, then blur out for a softer lava-lamp edge.
+            gradient = QRadialGradient(size / 2, size / 2, size / 2)
+            core_color = QColor(self._color)
+            mid_color = QColor(self._color)
+            edge_color = QColor(self._color)
+            outer_color = QColor(self._color)
+            core_color.setAlpha(255)
+            mid_color.setAlpha(245)
+            edge_color.setAlpha(165)
+            outer_color.setAlpha(0)
+            gradient.setColorAt(0.00, core_color)
+            gradient.setColorAt(0.24, core_color)
+            gradient.setColorAt(0.55, mid_color)
+            gradient.setColorAt(0.82, edge_color)
+            gradient.setColorAt(0.96, QColor(self._color.red(), self._color.green(), self._color.blue(), 42))
+            gradient.setColorAt(1.00, outer_color)
             painter.setBrush(QBrush(gradient)); painter.setPen(Qt.NoPen); painter.drawEllipse(0, 0, size, size)
+
+            # Add a soft off-center highlight to make blobs read as gel instead of flat glow.
+            highlight = QRadialGradient(size * 0.36, size * 0.32, size * 0.46)
+            highlight_inner = QColor(255, 255, 255, 72)
+            highlight_mid = QColor(255, 255, 255, 26)
+            highlight_outer = QColor(255, 255, 255, 0)
+            highlight.setColorAt(0.00, highlight_inner)
+            highlight.setColorAt(0.40, highlight_mid)
+            highlight.setColorAt(1.00, highlight_outer)
+            painter.setBrush(QBrush(highlight)); painter.setPen(Qt.NoPen); painter.drawEllipse(0, 0, size, size)
         finally:
             painter.end()
 

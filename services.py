@@ -28,21 +28,97 @@ class ColorCache:
                 data = json.load(f)
                 # Validation: Ensure the loaded data is actually a dictionary
                 if isinstance(data, dict):
-                    return data
+                    changed = False
+                    normalized = {}
+                    for key, value in data.items():
+                        entry, entry_changed = self._normalize_cache_entry(value)
+                        normalized[key] = entry
+                        changed = changed or entry_changed
+                    if changed:
+                        self.cache = normalized
+                        self.save()
+                    return normalized
                 return {}
         except (json.JSONDecodeError, IOError, ValueError):
             return {}
+
+    def _normalize_color_triplet(self, value):
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            return None
+        try:
+            return [int(value[0]), int(value[1]), int(value[2])]
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_palette(self, palette):
+        if not isinstance(palette, list):
+            return []
+        normalized = []
+        for color in palette:
+            triplet = self._normalize_color_triplet(color)
+            if triplet is not None:
+                normalized.append(triplet)
+        return normalized
+
+    def _normalize_cache_entry(self, entry):
+        if not isinstance(entry, dict):
+            return entry, False
+
+        normalized = dict(entry)
+        changed = False
+
+        legacy_bg = self._normalize_color_triplet(normalized.get("player_bg_color"))
+        blob_palette = self._normalize_palette(normalized.get("blob_palette"))
+        if blob_palette != normalized.get("blob_palette"):
+            normalized["blob_palette"] = blob_palette
+            changed = True
+
+        if legacy_bg is not None:
+            if legacy_bg not in blob_palette:
+                normalized["blob_palette"] = [legacy_bg] + blob_palette
+                changed = True
+            if "player_bg_color" in normalized:
+                normalized.pop("player_bg_color", None)
+                changed = True
+
+        ui_palette = self._normalize_palette(normalized.get("ui_palette"))
+        if ui_palette and ui_palette != normalized.get("ui_palette"):
+            normalized["ui_palette"] = ui_palette
+            changed = True
+
+        if ui_palette:
+            primary_tone = ui_palette[0]
+            current_blobs = self._normalize_palette(normalized.get("blob_palette"))
+            if primary_tone not in current_blobs:
+                normalized["blob_palette"] = [primary_tone] + current_blobs
+                changed = True
+
+        return normalized, changed
 
     def save(self):
         try:
             with open(self.filepath, 'w') as f: json.dump(self.cache, f, indent=4)
         except IOError as e: print(f"Error saving color cache: {e}")
 
-    def get_album_data(self, album_id): return self.cache.get(album_id)
+    def get_album_data(self, album_id):
+        data = self.cache.get(album_id)
+        if not isinstance(data, dict):
+            return data
+        normalized, changed = self._normalize_cache_entry(data)
+        if changed:
+            self.cache[album_id] = normalized
+            self.save()
+        return normalized
+
     def set_album_data(self, album_id, data):
         if data is None: 
             if album_id in self.cache: del self.cache[album_id]
-        else: self.cache[album_id] = data
+        else:
+            if isinstance(data, dict):
+                normalized, _ = self._normalize_cache_entry(data)
+                self.cache[album_id] = normalized
+            else:
+                self.cache[album_id] = data
         self.save()
     def clear(self): self.cache = {}; self.save()
 

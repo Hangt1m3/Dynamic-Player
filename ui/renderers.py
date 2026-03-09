@@ -80,6 +80,10 @@ class BackgroundRendererController:
         if self._gl_widget:
             self._gl_widget.set_base_color(QColor(color))
 
+    def set_global_opacity(self, value):
+        if self._gl_widget:
+            self._gl_widget.set_global_opacity(value)
+
     def set_style_preset(self, preset_name):
         if self._gl_widget:
             self._gl_widget.set_style_preset(preset_name)

@@ -77,16 +77,39 @@ class TrackLoaderWorker(QRunnable):
             
             if not low_res_pil_img: low_res_pil_img = Image.new("RGB", (640, 640), "black")
 
-            # Logic extraction (simplified for brevity, keeps original logic)
-            ui_palette = None; lights_palette = None; blob_palette = None; text_color = None; shadow_enabled = True
-            cached_data = album_cache.copy()
-            if track_cache: cached_data.update(track_cache)
-            
-            if cached_data:
-                if isinstance(cached_data, dict):
-                    ui_palette = cached_data.get("ui_palette"); text_color = cached_data.get("text_color")
-                    blob_palette = cached_data.get("blob_palette"); lights_config = cached_data.get("lights_config")
-                    if lights_config and lights_config.get("mode") == "custom": lights_palette = lights_config.get("palette")
+            # Keep visual colors album-scoped so same-album track changes do not recolor the UI.
+            color_keys = {
+                "ui_palette",
+                "blob_palette",
+                "lights_config",
+                "text_color",
+                "text_border_color",
+                "title_gradient_color",
+            }
+            album_color_data = {
+                key: value for key, value in (album_cache.items() if isinstance(album_cache, dict) else []) if key in color_keys
+            }
+
+            # Non-color presentation settings may still be overridden per-track.
+            settings_data = album_cache.copy() if isinstance(album_cache, dict) else {}
+            if isinstance(track_cache, dict):
+                for key, value in track_cache.items():
+                    if key not in color_keys:
+                        settings_data[key] = value
+
+            ui_palette = None
+            lights_palette = None
+            blob_palette = None
+            text_color = None
+            shadow_enabled = True
+            lights_config = album_color_data.get("lights_config") if isinstance(album_color_data, dict) else None
+
+            if album_color_data:
+                ui_palette = album_color_data.get("ui_palette")
+                text_color = album_color_data.get("text_color")
+                blob_palette = album_color_data.get("blob_palette")
+                if lights_config and lights_config.get("mode") == "custom":
+                    lights_palette = lights_config.get("palette")
             
             extracted_text_color = None; border_needed = False
             if not ui_palette:
@@ -94,33 +117,35 @@ class TrackLoaderWorker(QRunnable):
             elif not lights_palette:
                 _, lights_palette, blob_palette, extracted_text_color, border_needed = extract_palette_from_image(low_res_pil_img, 3)
 
-            text_border_enabled = cached_data.get("text_border_enabled") if cached_data else None
+            text_border_enabled = settings_data.get("text_border_enabled") if settings_data else None
             if text_border_enabled is None:
                 text_border_enabled = True if self.defaults.get("text_border_enabled") else border_needed
 
             if not text_color:
-                text_color = extracted_text_color if extracted_text_color and not cached_data.get("ui_palette") else list(get_best_text_color(cached_data.get("player_bg_color") or ui_palette[0]))
+                text_color = extracted_text_color if extracted_text_color and not album_color_data.get("ui_palette") else list(get_best_text_color(ui_palette[0]))
 
-            text_border_color = cached_data.get("text_border_color")
+            text_border_color = album_color_data.get("text_border_color")
             if not text_border_color:
                 candidates = []
                 if len(ui_palette) > 1: candidates.append(ui_palette[1])
                 if blob_palette: candidates.extend(blob_palette)
-                text_border_color = list(get_best_border_color(cached_data.get("player_bg_color") or ui_palette[0], text_color, candidates))
+                text_border_color = list(get_best_border_color(ui_palette[0], text_color, candidates))
 
             self.signals.result.emit({
                 "pil_img": low_res_pil_img, "ui_palette": ui_palette, "original_lights_palette": lights_palette, "blob_palette": blob_palette,
-                "text_color": text_color, "shadow_enabled": cached_data.get("shadow_enabled", shadow_enabled),
-                "font_family": cached_data.get("font_family", self.defaults.get("font_family")),
-                "font_style": cached_data.get("font_style", self.defaults.get("font_style")),
-                "font_size_scale": cached_data.get("font_size_scale", self.defaults.get("font_size_scale")),
-                "title_case": cached_data.get("title_case", "default"), "artist_case": cached_data.get("artist_case", "default"),
-                "album_art_border_enabled": cached_data.get("album_art_border_enabled", True),
-                "title_gradient_enabled": cached_data.get("title_gradient_enabled", False),
-                "title_gradient_color": cached_data.get("title_gradient_color", [255, 255, 255]),
-                "title_gradient_direction": cached_data.get("title_gradient_direction", "Left to Right"),
+                "text_color": text_color,
+                "lights_config": lights_config if isinstance(lights_config, dict) else {},
+                "shadow_enabled": settings_data.get("shadow_enabled", shadow_enabled),
+                "font_family": settings_data.get("font_family", self.defaults.get("font_family")),
+                "font_style": settings_data.get("font_style", self.defaults.get("font_style")),
+                "font_size_scale": settings_data.get("font_size_scale", self.defaults.get("font_size_scale")),
+                "title_case": settings_data.get("title_case", "default"), "artist_case": settings_data.get("artist_case", "default"),
+                "album_art_border_enabled": settings_data.get("album_art_border_enabled", True),
+                "title_gradient_enabled": settings_data.get("title_gradient_enabled", False),
+                "title_gradient_color": album_color_data.get("title_gradient_color") or settings_data.get("title_gradient_color", [255, 255, 255]),
+                "title_gradient_direction": settings_data.get("title_gradient_direction", "Left to Right"),
                 "text_border_enabled": text_border_enabled, "text_border_color": text_border_color,
-                "text_border_size": cached_data.get("text_border_size"), "token": self.token
+                "text_border_size": settings_data.get("text_border_size"), "token": self.token
             })
 
             high_res_pil_img = low_res_pil_img

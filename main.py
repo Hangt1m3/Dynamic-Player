@@ -6,7 +6,7 @@ import io
 import time
 import multiprocessing
 import ctypes
-from services import ColorCache, GoveeController, SoundManager, GlobalSoundFilter, AppleMusicClient
+from services import ColorCache, LyricsCache, GoveeController, SoundManager, GlobalSoundFilter, AppleMusicClient
 from PIL import Image
 from requests import get
 
@@ -38,13 +38,42 @@ from config import (
     LAVA_LAMP_PRESET,
 )
 from utils import resource_path
-from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, IS_WINDOWS
-from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel
+from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, LyricsWorker, IS_WINDOWS
+from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, LyricsLabel
 from ui.playlist_panel import PlaylistPanel
 from ui.renderers import BackgroundRendererController
 from utils import get_best_text_color, get_best_border_color
 from ui.overlays import OverlayWidget, NotificationWidget
 from ui.dialogs import ColorEditorDialog, SpotifySetupDialog, AppleMusicSetupDialog, ThemedMessageBox
+
+
+class _MonitorHopOverlay(QWidget):
+    """Full-window black veil used during monitor-hop transitions.
+
+    Animates its own painted alpha so the main window stays at opacity 1.0
+    throughout — this prevents DWM / QOpenGLWidget compositing flicker that
+    occurs when setWindowOpacity is animated on a WA_TranslucentBackground
+    window containing an OpenGL surface.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._alpha = 0
+
+    def get_alpha(self):
+        return self._alpha
+
+    def set_alpha(self, val):
+        self._alpha = max(0, min(255, int(val)))
+        self.update()
+
+    alpha = pyqtProperty(int, get_alpha, set_alpha)
+
+    def paintEvent(self, event):
+        if self._alpha > 0:
+            p = QPainter(self)
+            p.fillRect(self.rect(), QColor(0, 0, 0, self._alpha))
 
 
 class SpotifyPlayer(QMainWindow):
@@ -140,6 +169,13 @@ class SpotifyPlayer(QMainWindow):
         self._startup_fade_done = False
         self._suspend_layout_updates = False
         self._mode_switch_in_progress = False
+        self._desktop_parent_hwnd = None
+        self._monitor_shift_animating = False
+        self._last_monitor_shift_ms = 0
+        self._monitor_shift_cooldown_ms = 420
+        self._monitor_shift_settle_ms = 180
+        self._monitor_hop_fade_out_anim = None
+        self._monitor_hop_fade_in_anim = None
         self.drag_pos = None
         self.resize_corner = None  # Track which corner is being dragged: TL, TR, BL, BR, None
         self.resize_start_rect = None  # Store the window rect when resize starts
@@ -199,9 +235,14 @@ class SpotifyPlayer(QMainWindow):
         self.artist = None
         self.progress_bar = None
         self.album_name = None # New: Album name label
+        self.lyrics_label = None  # Lyrics: single synced line
         self.art_shadow = None
         self.title_shadow = None
         self.artist_shadow = None
+
+        # Lyrics state
+        self._current_lyrics = []  # [(ms, text), ...]
+        self._current_lyric_index = -1
 
         self.notification_widget = NotificationWidget()
         self.notification_widget.clicked.connect(self._on_notification_clicked)
@@ -222,6 +263,7 @@ class SpotifyPlayer(QMainWindow):
         
         self._load_govee_settings() 
         self.color_cache = ColorCache()
+        self.lyrics_cache = LyricsCache()
         self._govee = GoveeController(self.govee_api_key, self.govee_devices)
         self._load_settings()
         self._apply_window_mode_flags()
@@ -351,6 +393,9 @@ class SpotifyPlayer(QMainWindow):
     def _update_native_titlebar_color(self):
         if not IS_WINDOWS:
             return
+        # Packaged builds have shown instability in this optional DWM path on some systems.
+        if getattr(sys, "frozen", False):
+            return
         if not self._is_windowed_mode() or self._is_custom_frameless_windowed_mode():
             self._last_native_caption_rgb = None
             return
@@ -420,6 +465,12 @@ class SpotifyPlayer(QMainWindow):
             self._set_album_art(self._idle_pil_img)
         self.art.setBorderColor(QColor("transparent"))
         self.art.setLoadingState(False)
+
+        self._current_lyrics = []
+        self._current_lyric_index = -1
+        if self.lyrics_label:
+            self.lyrics_label.reset()
+            self.lyrics_label.show()
 
         self.title.setText("Dynamic Player")
         self.artist.setText("Play music on any device to begin")
@@ -806,8 +857,7 @@ class SpotifyPlayer(QMainWindow):
              self.default_govee_brightness = safe_cast(settings.value("govee_brightness"), float, 1.0)
 
         self.blob_density = int(safe_cast(settings.value("blob_density"), float, 200000))
-        raw_preset = str(settings.value("lava_lamp_preset", LAVA_LAMP_PRESET)).strip().lower()
-        self.lava_lamp_preset = raw_preset if raw_preset in {"ultra_soft", "balanced", "color_pop"} else LAVA_LAMP_PRESET
+        self.lava_lamp_preset = "color_pop"
         
         sound_vol = safe_cast(settings.value("sound_volume"), float, 0.5)
         self.sound_manager.set_master_volume(sound_vol)
@@ -1038,7 +1088,7 @@ class SpotifyPlayer(QMainWindow):
 
         recent_colors_names = [c.name(QColor.HexRgb) for c in self.recent_colors]
         settings.setValue("recent_colors", json.dumps(recent_colors_names))
-        settings.setValue("lava_lamp_preset", getattr(self, "lava_lamp_preset", LAVA_LAMP_PRESET))
+        settings.setValue("lava_lamp_preset", "color_pop")
 
     def _setup_ui(self):
         self.setWindowTitle("Dynamic Player")
@@ -1096,10 +1146,22 @@ class SpotifyPlayer(QMainWindow):
 
         self.progress_bar = SmoothProgressBar()
 
+        self.lyrics_shadow = QGraphicsDropShadowEffect(self)
+        self.lyrics_label = LyricsLabel()
+        self.lyrics_label.setFont(QFont(font_family, 18))
+        self.lyrics_label.setStyleSheet("background: transparent;")
+        self.lyrics_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lyrics_label.setMaxLines(2)
+        self.lyrics_label.setFixedHeight(56)
+        self.lyrics_label.setGraphicsEffect(self.lyrics_shadow)
+        # Keep visible so lyrics space is always reserved and layout does not jitter.
+        self.lyrics_label.show()
+
         self.details_layout.addWidget(self.title)
         self.details_layout.insertWidget(1, self.album_name)
         self.details_layout.addWidget(self.artist)
         self.details_layout.addWidget(self.progress_bar)
+        self.details_layout.addWidget(self.lyrics_label)
 
         art_container_layout.addWidget(self.art)
 
@@ -1124,7 +1186,7 @@ class SpotifyPlayer(QMainWindow):
 
     def _setup_background_renderer(self):
         self.background_renderer = BackgroundRendererController(self)
-        self.background_renderer.set_style_preset(getattr(self, "lava_lamp_preset", LAVA_LAMP_PRESET))
+        self.background_renderer.set_style_preset("color_pop")
         self._sync_background_renderer_mode()
         if self.background_renderer.supports_gl:
             print(f"Background renderer: OpenGL available ({self.background_renderer.support_reason})")
@@ -1783,6 +1845,11 @@ class SpotifyPlayer(QMainWindow):
             self._current_track_duration = 0
             self.progress_bar.fade_out()
             self.art.setAspectRatio(1.0) # Revert to square
+            self._current_lyrics = []
+            self._current_lyric_index = -1
+            if self.lyrics_label:
+                self.lyrics_label.reset()
+                self.lyrics_label.show()
 
             # If a non-Spotify source stopped and Spotify has a track (even paused), switch back to Spotify
             if source in ['windows', 'apple_music'] and self._last_spotify_track_data and self._is_media_method_enabled('spotify'):
@@ -1818,6 +1885,27 @@ class SpotifyPlayer(QMainWindow):
         self._handle_no_playback('windows')
 
     def _on_frame_update(self):
+        # Lyrics must tick regardless of window visibility so they stay in sync
+        # when the player is unfocused, minimized, or behind other windows.
+        if self._current_lyrics and not self._is_paused and self.active_media_source == 'spotify' and self.lyrics_label and self.lyrics_label.isVisible():
+            elapsed = QDateTime.currentMSecsSinceEpoch() - self._last_progress_sync_time
+            current_ms = min(self._last_progress_val + elapsed, self._current_track_duration)
+
+            new_index = -1
+            for i, (ts, _) in enumerate(self._current_lyrics):
+                if ts <= current_ms:
+                    new_index = i
+                else:
+                    break
+
+            if new_index != self._current_lyric_index and new_index >= 0:
+                self._current_lyric_index = new_index
+                line_text = self._current_lyrics[new_index][1]
+                if line_text:
+                    self.lyrics_label.setLine(line_text)
+                else:
+                    self.lyrics_label.clearLine()
+
         if self.isMinimized() or self.isHidden(): return
         if self._current_progress_bar_enabled and self.active_media_source == 'spotify':
             if not self._is_paused and self._current_track_duration > 0:
@@ -1828,6 +1916,7 @@ class SpotifyPlayer(QMainWindow):
                 self.progress_bar.setTargetValue(self._last_progress_val)
             
             self.progress_bar.update_smooth_value()
+
 
         if self.background_renderer:
             self.background_renderer.set_background_color(self._current_blended_bg_color())
@@ -1860,8 +1949,69 @@ class SpotifyPlayer(QMainWindow):
         self._last_progress_sync_time = QDateTime.currentMSecsSinceEpoch()
         self.progress_bar.setRange(0, self._current_track_duration)
         self.progress_bar.setTargetValue(self._last_progress_val, snap=True)
+
+        # --- Lyrics: reset state and fetch for new track ---
+        # Keep the label mounted/visible so layout height remains stable; reset()
+        # clears text + opacity while preserving the reserved lyrics slot.
+        self._current_lyrics = []
+        self._current_lyric_index = -1
+        item = data["item"]
+        track_id = item["id"]
+        if self.lyrics_label:
+            self.lyrics_label.reset()
+        if self.lyrics_cache.has(track_id):
+            cached = self.lyrics_cache.get(track_id)
+            if cached:
+                self._current_lyrics = cached
+                if self.lyrics_label:
+                    # Visible at opacity=0; frame_update will call setLine -> fade in.
+                    self.lyrics_label.show()
+            else:
+                # Cached as False (no synced lyrics): keep reserved space, clear text.
+                if self.lyrics_label:
+                    self.lyrics_label.reset()
+                    self.lyrics_label.show()
+        else:
+            # Not yet fetched: keep reserved space until worker responds.
+            if self.lyrics_label:
+                self.lyrics_label.reset()
+                self.lyrics_label.show()
+            lyrics_worker = LyricsWorker(
+                track_id,
+                item.get("name", ""),
+                item.get("artists", [{}])[0].get("name", ""),
+                item.get("album", {}).get("name", ""),
+                item.get("duration_ms", 0),
+            )
+            lyrics_worker.signals.lyrics_ready.connect(self._on_lyrics_ready)
+            lyrics_worker.signals.no_lyrics.connect(self._on_no_lyrics)
+            self.threadpool.start(lyrics_worker)
+
         # Aspect ratio is now set after the fade-out to prevent a jarring switch.
         self._load_track_data(data["item"], data["is_playing"], data["progress_ms"], aspect_ratio=1.0)
+
+    @pyqtSlot(str, list)
+    def _on_lyrics_ready(self, track_id, lines):
+        """Receives parsed synced lyrics from LyricsWorker."""
+        if track_id != self._current_track_id:
+            return  # Stale response for a previous track
+        self.lyrics_cache.set(track_id, lines)
+        self._current_lyrics = lines
+        self._current_lyric_index = -1
+        if self.lyrics_label:
+            # reset() was already called during track_changed; opacity is 0.
+            # show() makes the widget visible so frame_update can drive the fade-in.
+            self.lyrics_label.show()
+
+    @pyqtSlot(str)
+    def _on_no_lyrics(self, track_id):
+        """Called when no synced lyrics are available for the current track."""
+        if track_id != self._current_track_id:
+            return
+        self.lyrics_cache.set(track_id, False)
+        if self.lyrics_label:
+            self.lyrics_label.reset()
+            self.lyrics_label.show()
 
     @pyqtSlot(dict)
     def _on_windows_track_changed(self, data):
@@ -2107,7 +2257,11 @@ class SpotifyPlayer(QMainWindow):
         else:
             self.govee_brightness = self.default_govee_brightness
         
-        primary_qcolor = self._derive_background_tone_color()
+        player_bg_rgb = cached_data.get("player_bg_color")
+        if player_bg_rgb:
+            primary_qcolor = QColor(*player_bg_rgb)
+        else:
+            primary_qcolor = self._derive_background_tone_color()
 
         if album_changed:
             self._current_bg_color = primary_qcolor
@@ -2251,7 +2405,7 @@ class SpotifyPlayer(QMainWindow):
         self._current_progress_bar_enabled = cached_data.get("progress_bar_enabled", self.default_progress_bar_enabled) if isinstance(cached_data, dict) else self.default_progress_bar_enabled
         self._current_lights_palette = cached_data.get("original_lights_palette", self._current_lights_palette)
         
-        player_bg_rgb = self._current_ui_palette[0]
+        player_bg_rgb = cached_data.get("player_bg_color", self._current_ui_palette[0])
         text_rgb = album_cache.get("text_color")
         if not text_rgb:
             accent_rgb = self._current_ui_palette[1] if len(self._current_ui_palette) > 1 else None
@@ -2303,7 +2457,7 @@ class SpotifyPlayer(QMainWindow):
 
         album_text = self._apply_case_transform(item["album"]["name"], self._current_artist_case)
         self.album_name.setText(album_text)
-        primary_qcolor = self._derive_background_tone_color()
+        primary_qcolor = QColor(*player_bg_rgb)
         border_color = QColor(*self._current_ui_palette[1]) if len(self._current_ui_palette) > 1 else primary_qcolor.lighter(150)
         self.art.setBorderColor(border_color if self._current_album_border_enabled else QColor("transparent"))
         self._old_bg_color = self._current_bg_color
@@ -2553,8 +2707,7 @@ class SpotifyPlayer(QMainWindow):
         self.windows_media_method_enabled = str(settings.value("windows_media_method_enabled", "true")).lower() == "true"
         saved_art_side = str(settings.value("player_art_side", "left")).strip().lower()
         self.player_art_side = "right" if saved_art_side == "right" else "left"
-        raw_preset = str(settings.value("lava_lamp_preset", LAVA_LAMP_PRESET)).strip().lower()
-        self.lava_lamp_preset = raw_preset if raw_preset in {"ultra_soft", "balanced", "color_pop"} else LAVA_LAMP_PRESET
+        self.lava_lamp_preset = "color_pop"
         if self.background_renderer:
             self.background_renderer.set_style_preset(self.lava_lamp_preset)
 
@@ -2918,20 +3071,9 @@ class SpotifyPlayer(QMainWindow):
             details_layout.addWidget(self.progress_bar, 0, Qt.AlignCenter)
             self.main_layout.addStretch(1)
 
-        # Defensive check to ensure wallpaper mode flags are not lost
-        if self.is_wallpaper_mode:
-            current_flags = self.windowFlags()
-            wallpaper_flags = Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint | Qt.Tool
-            if current_flags != wallpaper_flags:
-                self.setWindowFlags(wallpaper_flags)
-                self.show()
-
         self.details_widget.setContentsMargins(20 if is_vertical else 40, 0, 20, 0)
         self.update() 
         self._update_text_properties() 
-        
-        if self._prev_track_data:
-            self.fade_in_group.start()
 
     @pyqtSlot(dict)
     def _on_playback_state_changed(self, data):
@@ -2977,8 +3119,9 @@ class SpotifyPlayer(QMainWindow):
         shadow_color = QColor(0, 0, 0) 
         shadow_color.setAlpha(int((100 / 255) * self._text_alpha)) 
 
-        # Apply alpha to album name shadow and text
+        # Apply alpha to album name and lyrics shadow and text
         if self.album_name.graphicsEffect(): self.album_name.graphicsEffect().setColor(shadow_color)
+        if self.lyrics_label and self.lyrics_label.graphicsEffect(): self.lyrics_label.graphicsEffect().setColor(shadow_color)
         self.album_name.setTextColor(text_with_alpha)
         self.album_name.setGradient(title_gradient_enabled, title_gradient_color, title_gradient_direction)
         self.album_name.setBorder(self._current_text_border_enabled, border_c)
@@ -2996,6 +3139,9 @@ class SpotifyPlayer(QMainWindow):
         self.artist.setBorder(self._current_text_border_enabled, border_c)
         self.artist.setBorder(self._current_text_border_enabled, border_c, self._current_text_border_size)
         self.progress_bar.set_color(text_with_alpha)
+        if self.lyrics_label:
+            self.lyrics_label.setTextColor(text_with_alpha)
+            self.lyrics_label.setBorder(self._current_text_border_enabled, border_c, self._current_text_border_size)
 
     def update_art_shadow_properties(self):
         if not self.art_shadow: return
@@ -3029,9 +3175,18 @@ class SpotifyPlayer(QMainWindow):
         album_font.setPixelSize(int(max(9, 18 * scale_factor * user_scale))) # Slightly smaller than artist
         self.album_name.setFont(album_font)
 
+        lyrics_font = db.font(self._current_font_family, self._current_font_style, -1)
+        lyrics_font.setPixelSize(int(max(9, 18 * scale_factor * user_scale)))
+        if self.lyrics_label:
+            self.lyrics_label.setFont(lyrics_font)
+            self.lyrics_label.setMaxLines(2)
+
         self.title.setFixedHeight(max(34, QFontMetrics(title_font).lineSpacing() * 2 + 6))
         self.artist.setFixedHeight(max(28, QFontMetrics(artist_font).lineSpacing() * 2 + 4))
         self.album_name.setFixedHeight(max(26, QFontMetrics(album_font).lineSpacing() * 2 + 4))
+        if self.lyrics_label:
+            lyric_metrics = QFontMetrics(lyrics_font)
+            self.lyrics_label.setFixedHeight(max(42, lyric_metrics.lineSpacing() * 2 + 8))
 
         offset_val = abs(max(1, 2.5 * scale_factor))
         
@@ -3048,6 +3203,10 @@ class SpotifyPlayer(QMainWindow):
         self.title_shadow.setEnabled(self._current_shadow_enabled)
         self.artist_shadow.setEnabled(self._current_shadow_enabled)
         self.album_name.graphicsEffect().setEnabled(self._current_shadow_enabled) # Enable/disable album shadow
+        if self.lyrics_label and self.lyrics_label.graphicsEffect():
+            self.lyrics_label.graphicsEffect().setBlurRadius(max(6, 13 * scale_factor))
+            self.lyrics_label.graphicsEffect().setOffset(offset_val, offset_val)
+            self.lyrics_label.graphicsEffect().setEnabled(self._current_shadow_enabled)
 
         self.title.setContentsMargins(0, 0, 0, int(offset_val) + 2)
         self.setTextColor(self._cur_text_color)
@@ -3194,6 +3353,86 @@ class SpotifyPlayer(QMainWindow):
     def toggle_fullscreen_mode(self):
         """Toggle between borderless fullscreen and windowed mode."""
         self._handle_fullscreen_hotkey()
+
+    def _can_start_monitor_hop(self):
+        now_ms = QDateTime.currentMSecsSinceEpoch()
+        if self._monitor_shift_animating:
+            return False
+        if (now_ms - self._last_monitor_shift_ms) < self._monitor_shift_cooldown_ms:
+            return False
+        self._monitor_shift_animating = True
+        self._last_monitor_shift_ms = now_ms
+        return True
+
+    def _finish_monitor_hop(self):
+        self._monitor_shift_animating = False
+        self._restore_overlay_visibility()
+
+    def _run_invisible_monitor_hop(self, apply_change):
+        if not self._can_start_monitor_hop():
+            return False
+
+        # Lazy-create the veil overlay on first use.
+        if not hasattr(self, '_hop_overlay') or self._hop_overlay is None:
+            self._hop_overlay = _MonitorHopOverlay(self)
+
+        self._remember_overlay_visibility()
+        self.notification_widget.fade_out()
+
+        # Use a child-widget black veil instead of setWindowOpacity so the window
+        # stays at opacity 1.0 throughout — avoids DWM / OpenGL compositing flicker.
+        overlay = self._hop_overlay
+        overlay.setGeometry(self.rect())
+        overlay.set_alpha(0)
+        overlay.raise_()
+        overlay.show()
+
+        fade_out = QPropertyAnimation(overlay, b"alpha")
+        fade_out.setDuration(120)
+        fade_out.setStartValue(0)
+        fade_out.setEndValue(255)
+        fade_out.setEasingCurve(QEasingCurve.OutCubic)
+
+        def apply_change_and_settle():
+            apply_change()
+            overlay.setGeometry(self.rect())
+            self.update_layout()
+            self._update_text_properties()
+            if hasattr(self, 'playlist_panel') and self.playlist_panel:
+                self.playlist_panel.request_relayout(0)
+            if self.background_renderer:
+                self.background_renderer.resize(self.rect())
+                self.background_renderer.tick()
+
+            QTimer.singleShot(max(60, int(self._monitor_shift_settle_ms)), start_fade_in)
+
+        def start_fade_in():
+            overlay.setGeometry(self.rect())
+            self.update_layout()
+            self._update_text_properties()
+            if hasattr(self, 'playlist_panel') and self.playlist_panel:
+                self.playlist_panel.request_relayout(0)
+            if self.background_renderer:
+                self.background_renderer.resize(self.rect())
+                self.background_renderer.tick()
+
+            fade_in = QPropertyAnimation(overlay, b"alpha")
+            fade_in.setDuration(180)
+            fade_in.setStartValue(255)
+            fade_in.setEndValue(0)
+            fade_in.setEasingCurve(QEasingCurve.InOutCubic)
+            fade_in.finished.connect(finish)
+            self._monitor_hop_fade_in_anim = fade_in
+            fade_in.start()
+
+        def finish():
+            overlay.hide()
+            self._finish_monitor_hop()
+
+        fade_out.finished.connect(apply_change_and_settle)
+        self._monitor_hop_fade_out_anim = fade_out
+        fade_out.start()
+        return True
     
     def switch_monitor(self):
         """Cycle to the next monitor."""
@@ -3216,27 +3455,20 @@ class SpotifyPlayer(QMainWindow):
         # Cycle to next monitor
         new_index = (index + 1) % len(screens)
         new_screen = screens[new_index]
-        
-        self.notification_widget.fade_out()
-        
-        if self.is_fullscreen and not self.multi_monitor_mode:
-            # Move fullscreen to new monitor
-            self._clear_native_fullscreen_state()
-            self._enter_borderless_fullscreen(new_screen)
-        else:
-            # Move window to new monitor center
-            geo = new_screen.availableGeometry()
-            w, h = self.width(), self.height()
-            x = geo.x() + (geo.width() - w) // 2
-            y = geo.y() + (geo.height() - h) // 2
-            self.setGeometry(x, y, w, h)
-        
-        QTimer.singleShot(100, lambda: (
-            self.update_layout(),
-            self._update_text_properties(),
-            self.playlist_panel.request_relayout(0) if hasattr(self, 'playlist_panel') and self.playlist_panel else None,
-            self._restore_overlay_visibility()
-        ))
+
+        def apply_change():
+            if self.is_fullscreen and not self.multi_monitor_mode:
+                if self.windowHandle() and new_screen:
+                    self.windowHandle().setScreen(new_screen)
+                self.setGeometry(new_screen.geometry())
+            else:
+                geo = new_screen.availableGeometry()
+                w, h = self.width(), self.height()
+                x = geo.x() + (geo.width() - w) // 2
+                y = geo.y() + (geo.height() - h) // 2
+                self.setGeometry(x, y, w, h)
+
+        self._run_invisible_monitor_hop(apply_change)
     
     def toggle_multi_monitor_fullscreen(self):
         self._remember_overlay_visibility()
@@ -3282,8 +3514,6 @@ class SpotifyPlayer(QMainWindow):
         if not is_in_valid_state:
             return
 
-        self._remember_overlay_visibility()
-
         screens = QApplication.screens()
         screens.sort(key=lambda s: (s.geometry().x(), s.geometry().y()))
 
@@ -3303,29 +3533,19 @@ class SpotifyPlayer(QMainWindow):
         
         if current_index != -1:
             new_index = (current_index + direction) % len(screens)
-            self.target_monitor_geo = screens[new_index].geometry()
             new_geo = screens[new_index].geometry()
-            
-            # Update the correct geometry variable
-            if self.is_wallpaper_mode:
-                self._saved_target_monitor_geo = new_geo
-            else:
+
+            def apply_change():
                 self.target_monitor_geo = new_geo
-            
-            self.update_layout()
-            
-            # Trigger playlist panel relayout after shifting monitors
-            if hasattr(self, 'playlist_panel') and self.playlist_panel:
-                QTimer.singleShot(50, self.playlist_panel.relayout)
-            
-            QTimer.singleShot(0, self._restore_overlay_visibility)
+                if self.is_wallpaper_mode:
+                    self._saved_target_monitor_geo = new_geo
+
+            self._run_invisible_monitor_hop(apply_change)
 
     def shift_single_monitor_fullscreen(self, direction):
         screens = QApplication.screens()
         if len(screens) < 2: return
         screens.sort(key=lambda s: (s.geometry().x(), s.geometry().y()))
-
-        self._remember_overlay_visibility()
         
         current_screen = QApplication.screenAt(self.geometry().center())
         if not current_screen: current_screen = screens[0]
@@ -3335,30 +3555,87 @@ class SpotifyPlayer(QMainWindow):
         
         new_index = (index + direction) % len(screens)
         new_screen = screens[new_index]
-        
-        self.notification_widget.fade_out()
 
-        if self.is_fullscreen and not self.multi_monitor_mode and not self.is_wallpaper_mode:
-            self._clear_native_fullscreen_state()
-            self._enter_borderless_fullscreen(new_screen)
-        else:
-            self.setGeometry(new_screen.geometry())
-            self.update_layout()
+        def apply_change():
+            if self.is_fullscreen and not self.multi_monitor_mode and not self.is_wallpaper_mode:
+                if self.windowHandle() and new_screen:
+                    self.windowHandle().setScreen(new_screen)
+                self.setGeometry(new_screen.geometry())
+            else:
+                self.setGeometry(new_screen.geometry())
 
-        # Delay updates to allow window system to complete resize/move
-        QTimer.singleShot(100, lambda: (
-            self.update_layout(),
-            self._update_text_properties(),
-            self.playlist_panel.request_relayout(0) if hasattr(self, 'playlist_panel') and self.playlist_panel else None,
-            self.title and self.artist and self._trigger_notification(self.title.text(), self.artist.text(), self._current_pil_img, self._cur_text_color),
-            self._restore_overlay_visibility()
-        ))
+        self._run_invisible_monitor_hop(apply_change)
+
+    def _find_workerw_for_wallpaper(self):
+        if not IS_WINDOWS:
+            return None
+        try:
+            user32 = ctypes.windll.user32
+            SMTO_NORMAL = 0x0000
+            progman = user32.FindWindowW("Progman", None)
+            if progman:
+                result = ctypes.c_ulong(0)
+                user32.SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, ctypes.byref(result))
+
+            workerw = ctypes.c_void_p(0)
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+            def enum_windows_proc(hwnd, _lparam):
+                def_view = user32.FindWindowExW(hwnd, 0, "SHELLDLL_DefView", None)
+                if def_view:
+                    candidate = user32.FindWindowExW(0, hwnd, "WorkerW", None)
+                    if candidate:
+                        workerw.value = candidate
+                        return False
+                return True
+
+            user32.EnumWindows(enum_windows_proc, 0)
+            if workerw.value:
+                return int(workerw.value)
+        except Exception as e:
+            print(f"Wallpaper mode: failed to locate WorkerW host ({e})")
+        return None
+
+    def _attach_to_desktop_wallpaper_layer(self):
+        if not (IS_WINDOWS and self.is_wallpaper_mode):
+            return False
+        try:
+            hwnd = int(self.winId()) if self.winId() else 0
+            if not hwnd:
+                return False
+
+            target_parent = self._find_workerw_for_wallpaper()
+            if not target_parent:
+                target_parent = ctypes.windll.user32.FindWindowW("Progman", None)
+            if not target_parent:
+                return False
+
+            ctypes.windll.user32.SetParent(hwnd, target_parent)
+            self._desktop_parent_hwnd = target_parent
+            return True
+        except Exception as e:
+            print(f"Wallpaper mode: desktop attach failed ({e})")
+            return False
+
+    def _detach_from_desktop_wallpaper_layer(self):
+        if not IS_WINDOWS:
+            self._desktop_parent_hwnd = None
+            return
+        try:
+            hwnd = int(self.winId()) if self.winId() else 0
+            if hwnd and self._desktop_parent_hwnd:
+                ctypes.windll.user32.SetParent(hwnd, 0)
+        except Exception as e:
+            print(f"Wallpaper mode: desktop detach failed ({e})")
+        finally:
+            self._desktop_parent_hwnd = None
 
     def toggle_wallpaper_mode(self):
         self._remember_overlay_visibility()
         if self.is_wallpaper_mode:
             self.is_wallpaper_mode = False
             if self.tray_icon: self.tray_icon.hide()
+            self._detach_from_desktop_wallpaper_layer()
             self.setWindowFlags(self._saved_flags)
             if self._was_multi_monitor:
                 self.target_monitor_geo = self._saved_target_monitor_geo
@@ -3399,6 +3676,8 @@ class SpotifyPlayer(QMainWindow):
             self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint | Qt.Tool)
             self.setGeometry(target_geo)
             self.show()
+            if not self._attach_to_desktop_wallpaper_layer():
+                QTimer.singleShot(80, self._attach_to_desktop_wallpaper_layer)
             if self.tray_icon: self.tray_icon.show()
         
         # Trigger playlist panel relayout after wallpaper mode toggle

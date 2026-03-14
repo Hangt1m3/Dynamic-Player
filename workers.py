@@ -6,6 +6,8 @@ import requests
 import base64
 import hashlib 
 import json
+import re
+import urllib.parse
 from PIL import Image
 from PyQt5.QtCore import QObject, pyqtSignal, QRunnable, pyqtSlot, QDateTime, Qt, QDir
 from PyQt5.QtGui import QFontDatabase
@@ -228,6 +230,71 @@ class GitHubUpdatesWorker(QRunnable):
                     
         except Exception as e:
             self.signals.error.emit(str(e))
+
+class LyricsWorker(QRunnable):
+    """Fetches time-synced lyrics from lrclib.net and parses them into (ms, text) pairs."""
+    class Signals(QObject):
+        lyrics_ready = pyqtSignal(str, list)  # track_id, [(ms, text), ...]
+        no_lyrics = pyqtSignal(str)           # track_id
+
+    def __init__(self, track_id, track_name, artist_name, album_name, duration_ms):
+        super().__init__()
+        self.signals = self.Signals()
+        self.track_id = track_id
+        self.track_name = track_name
+        self.artist_name = artist_name
+        self.album_name = album_name
+        self.duration_ms = duration_ms
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            params = urllib.parse.urlencode({
+                "artist_name": self.artist_name,
+                "track_name": self.track_name,
+                "album_name": self.album_name,
+                "duration": int(self.duration_ms / 1000),
+            })
+            url = f"https://lrclib.net/api/get?{params}"
+            response = requests.get(url, timeout=5, headers={"User-Agent": "DynamicPlayer/1.0"})
+
+            if response.status_code != 200:
+                self.signals.no_lyrics.emit(self.track_id)
+                return
+
+            payload = response.json()
+            raw_lrc = payload.get("syncedLyrics")
+            if not raw_lrc:
+                self.signals.no_lyrics.emit(self.track_id)
+                return
+
+            lines = self._parse_lrc(raw_lrc)
+            if not lines:
+                self.signals.no_lyrics.emit(self.track_id)
+                return
+
+            self.signals.lyrics_ready.emit(self.track_id, lines)
+        except Exception:
+            self.signals.no_lyrics.emit(self.track_id)
+
+    def _parse_lrc(self, raw):
+        """Parse LRC format into sorted list of [ms, text] pairs.
+        Empty-text entries are kept as break markers (text == "").
+        """
+        pattern = re.compile(r'\[(\d+):(\d+(?:\.\d+)?)\](.*)')
+        results = []
+        for line in raw.splitlines():
+            m = pattern.match(line.strip())
+            if not m:
+                continue
+            minutes = int(m.group(1))
+            seconds = float(m.group(2))
+            text = m.group(3).strip()
+            ms = int((minutes * 60 + seconds) * 1000)
+            results.append([ms, text])
+        results.sort(key=lambda x: x[0])
+        return results
+
 
 class SpotifyPollingWorker(QRunnable):
     class Signals(QObject): track_changed = pyqtSignal(dict); playback_state_changed = pyqtSignal(dict); no_playback = pyqtSignal()

@@ -8,6 +8,7 @@ from PyQt5.QtCore import QStandardPaths, QDir, QTimer
 from utils import rgb_to_hsl, hsl_to_rgb, normalize_color
 from PyQt5.QtMultimedia import QSoundEffect
 from PyQt5.QtCore import QUrl, QObject, QEvent, pyqtSignal, QCoreApplication
+from PyQt5.QtGui import QColor
 import random
 
 class ColorCache:
@@ -60,6 +61,42 @@ class ColorCache:
                 normalized.append(triplet)
         return normalized
 
+    def _dedupe_palette(self, palette):
+        deduped = []
+        seen = set()
+        for color in palette:
+            key = tuple(color)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(color)
+        return deduped
+
+    def _fallback_accent_color(self, background, blob_palette):
+        if len(blob_palette) > 1:
+            return blob_palette[1]
+        if blob_palette:
+            source = blob_palette[0]
+        else:
+            source = background or [30, 30, 30]
+
+        accent = QColor(*source)
+        if accent.lightnessF() < 0.5:
+            accent = accent.lighter(150)
+        else:
+            accent = accent.darker(150)
+        return [accent.red(), accent.green(), accent.blue()]
+
+    def _fallback_blob_palette(self, background, accent):
+        source = QColor(*(accent or background or [30, 30, 30]))
+        lighter = source.lighter(115)
+        darker = source.darker(125)
+        return self._dedupe_palette([
+            [source.red(), source.green(), source.blue()],
+            [lighter.red(), lighter.green(), lighter.blue()],
+            [darker.red(), darker.green(), darker.blue()],
+        ])
+
     def _normalize_cache_entry(self, entry):
         if not isinstance(entry, dict):
             return entry, False
@@ -67,31 +104,57 @@ class ColorCache:
         normalized = dict(entry)
         changed = False
 
-        legacy_bg = self._normalize_color_triplet(normalized.get("player_bg_color"))
-        blob_palette = self._normalize_palette(normalized.get("blob_palette"))
-        if blob_palette != normalized.get("blob_palette"):
-            normalized["blob_palette"] = blob_palette
-            changed = True
-
-        if legacy_bg is not None:
-            if legacy_bg not in blob_palette:
-                normalized["blob_palette"] = [legacy_bg] + blob_palette
-                changed = True
-            if "player_bg_color" in normalized:
+        player_bg_color = self._normalize_color_triplet(normalized.get("player_bg_color"))
+        if "player_bg_color" in normalized:
+            if player_bg_color is None:
                 normalized.pop("player_bg_color", None)
                 changed = True
+            elif player_bg_color != normalized.get("player_bg_color"):
+                normalized["player_bg_color"] = player_bg_color
+                changed = True
+
+        blob_palette = self._normalize_palette(normalized.get("blob_palette"))
+        deduped_blob_palette = self._dedupe_palette(blob_palette)
+        if deduped_blob_palette != normalized.get("blob_palette"):
+            normalized["blob_palette"] = deduped_blob_palette
+            changed = True
+        blob_palette = deduped_blob_palette
 
         ui_palette = self._normalize_palette(normalized.get("ui_palette"))
         if ui_palette and ui_palette != normalized.get("ui_palette"):
             normalized["ui_palette"] = ui_palette
             changed = True
 
-        if ui_palette:
-            primary_tone = ui_palette[0]
-            current_blobs = self._normalize_palette(normalized.get("blob_palette"))
-            if primary_tone not in current_blobs:
-                normalized["blob_palette"] = [primary_tone] + current_blobs
+        if not player_bg_color and ui_palette:
+            player_bg_color = ui_palette[0]
+            normalized["player_bg_color"] = player_bg_color
+            changed = True
+
+        if player_bg_color and blob_palette:
+            filtered_blob_palette = [color for color in blob_palette if color != player_bg_color]
+            if filtered_blob_palette and filtered_blob_palette != blob_palette:
+                blob_palette = filtered_blob_palette
+                normalized["blob_palette"] = filtered_blob_palette
                 changed = True
+
+        if not ui_palette and (player_bg_color or blob_palette):
+            bg_color = player_bg_color or blob_palette[0]
+            accent_color = self._fallback_accent_color(bg_color, blob_palette)
+            ui_palette = [bg_color, accent_color]
+            normalized["ui_palette"] = ui_palette
+            changed = True
+
+        if not player_bg_color and ui_palette:
+            player_bg_color = ui_palette[0]
+            normalized["player_bg_color"] = player_bg_color
+            changed = True
+
+        if not blob_palette and ui_palette:
+            background = player_bg_color or ui_palette[0]
+            accent = ui_palette[1] if len(ui_palette) > 1 else None
+            blob_palette = self._fallback_blob_palette(background, accent)
+            normalized["blob_palette"] = blob_palette
+            changed = True
 
         return normalized, changed
 
@@ -121,6 +184,50 @@ class ColorCache:
                 self.cache[album_id] = data
         self.save()
     def clear(self): self.cache = {}; self.save()
+
+
+class LyricsCache:
+    """Persistent cache for time-synced lyrics keyed by Spotify track_id.
+    Values are either a list of (ms, text) tuples or False (no synced lyrics available).
+    """
+    def __init__(self, filename='lyrics_cache.json'):
+        app_data_path = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+        if not app_data_path:
+            app_data_path = QDir.homePath()
+        self.dir = QDir(app_data_path)
+        if not self.dir.exists():
+            self.dir.mkpath('.')
+        self.filepath = self.dir.filePath(filename)
+        self.cache = self._load()
+
+    def _load(self):
+        if not os.path.exists(self.filepath):
+            return {}
+        try:
+            with open(self.filepath, 'r') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, IOError, ValueError):
+            return {}
+
+    def _save(self):
+        try:
+            with open(self.filepath, 'w') as f:
+                json.dump(self.cache, f, separators=(',', ':'))
+        except IOError as e:
+            print(f"Error saving lyrics cache: {e}")
+
+    def has(self, track_id):
+        return track_id in self.cache
+
+    def get(self, track_id):
+        return self.cache.get(track_id, None)
+
+    def set(self, track_id, data):
+        """Store a list of [ms, text] pairs or False for tracks with no synced lyrics."""
+        self.cache[track_id] = data
+        self._save()
+
 
 class GoveeController:
     def __init__(self, api_key, devices):

@@ -24,7 +24,7 @@ from ui.overlays import NotificationWidget
 from services import ColorCache
 from workers import GitHubUpdatesWorker, GoveeDeviceFinderWorker
 from utils import get_contrast_ratio, get_best_text_color, get_best_border_color, extract_palette_from_image
-from config import SPOTIPY_REDIRECT_URI, GITHUB_TOKEN, LAVA_LAMP_PRESET
+from config import SPOTIPY_REDIRECT_URI, GITHUB_TOKEN
 
 class ThemedDialog(QDialog):
     # Copy the ThemedDialog implementation from original code
@@ -530,9 +530,10 @@ class ColorEditorDialog(QDialog):
         
         # --- 1. LOAD INITIAL STATE ---
         ui_palette = cached_data.get("ui_palette", main_window_state._current_ui_palette or [[30, 30, 30], [100, 100, 100]])
+        player_bg_color_rgb = cached_data.get("player_bg_color")
 
         # Initialize UI Colors first to calculate dependent auto colors correctly
-        self.ui_bg_color = QColor(*ui_palette[0])
+        self.ui_bg_color = QColor(*player_bg_color_rgb) if player_bg_color_rgb else QColor(*ui_palette[0])
         self.ui_accent_color = QColor(*ui_palette[1]) if len(ui_palette) > 1 else self.ui_bg_color.lighter(150)
 
         text_color_rgb = cached_data.get("text_color") # Get raw value
@@ -647,7 +648,7 @@ class ColorEditorDialog(QDialog):
 
         self.current_art_pixmap = album_art_pixmap
         # --- Initialize Auto Flags ---
-        self.is_bg_auto = True
+        self.is_bg_auto = "ui_palette" not in cached_data and "player_bg_color" not in cached_data
         self.is_accent_auto = "ui_palette" not in cached_data
         self.is_blob_auto = "blob_palette" not in cached_data
         self.is_lights_auto = "lights_config" not in cached_data
@@ -661,8 +662,6 @@ class ColorEditorDialog(QDialog):
                 self.ui_accent_color.lighter(120),
                 self.ui_accent_color.darker(120)
             ]
-        self._sync_primary_tone_from_blobs()
-
         # --- STORE INITIAL STATE FOR 'SAVE ONLY CHANGES' LOGIC ---
         self.initial_ui_bg_color = QColor(self.ui_bg_color)
         self.initial_ui_accent_color = QColor(self.ui_accent_color)
@@ -728,9 +727,8 @@ class ColorEditorDialog(QDialog):
         QTimer.singleShot(10, self._process_build_step)
 
     def _sync_primary_tone_from_blobs(self):
-        """Primary UI tone is derived from blob colors, not user-edited directly."""
-        if self.blob_colors:
-            self.ui_bg_color = QColor(self.blob_colors[0])
+        """Background color is controlled separately from blob colors."""
+        return
 
     def _process_build_step(self):
         if not self._build_generator: return
@@ -1066,15 +1064,9 @@ class ColorEditorDialog(QDialog):
         amount_layout.addWidget(self._create_dynamic_label("More"))
         visual_effects_layout.addRow(self._create_label("Background Motion Amount:"), amount_widget)
 
-        self.lava_preset_combo = NoScrollComboBox()
-        self.lava_preset_combo.addItem("Ultra Soft", "ultra_soft")
-        self.lava_preset_combo.addItem("Balanced", "balanced")
-        self.lava_preset_combo.addItem("Color Pop", "color_pop")
-        saved_lava_preset = str(settings.value("lava_lamp_preset", LAVA_LAMP_PRESET)).strip().lower()
-        preset_idx = self.lava_preset_combo.findData(saved_lava_preset)
-        self.lava_preset_combo.setCurrentIndex(preset_idx if preset_idx >= 0 else 1)
-        self.lava_preset_combo.setToolTip("Controls the style of the OpenGL lava-lamp background.")
-        visual_effects_layout.addRow(self._create_label("Lava Lamp Style:"), self.lava_preset_combo)
+        lava_style_value = self._create_dynamic_label("Color Pop (fixed)")
+        lava_style_value.setToolTip("Lava-lamp style is fixed to Color Pop.")
+        visual_effects_layout.addRow(self._create_label("Lava Lamp Style:"), lava_style_value)
 
         self.default_progress_bar_checkbox = QCheckBox("Show Progress Bar by Default")
         self.default_progress_bar_checkbox.setChecked(self.initial_default_progress_bar_enabled)
@@ -1530,8 +1522,8 @@ class ColorEditorDialog(QDialog):
         ui_colors_layout.setContentsMargins(0,0,0,0)
         ui_colors_layout.setSpacing(12)
         
-        self.ui_bg_preview, _, _ = self._create_color_picker(self.ui_bg_color, lambda: None, None)
-        ui_colors_layout.addRow(self._create_label("Primary Tone (from Blob 1):"), self.ui_bg_preview)
+        self.ui_bg_preview, pick_ui_bg_btn, self.reset_ui_bg_btn = self._create_color_picker(self.ui_bg_color, self.pick_ui_bg_color, self.reset_ui_bg_color)
+        ui_colors_layout.addRow(self._create_label("Player Background:"), self.create_color_row(self.ui_bg_preview, pick_ui_bg_btn, self.reset_ui_bg_btn))
         self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn = self._create_color_picker(self.ui_accent_color, self.pick_ui_accent_color, self.reset_ui_accent_color)
         ui_colors_layout.addRow(self._create_label("Accent / Art Frame:"), self.create_color_row(self.ui_accent_preview, pick_ui_accent_btn, self.reset_ui_accent_btn))
         ui_group_layout.addWidget(ui_colors_widget)
@@ -2587,6 +2579,7 @@ class ColorEditorDialog(QDialog):
             self.update_previews()
 
     def _update_bg_accent_buttons(self):
+        self.reset_ui_bg_btn.setEnabled(not self.is_bg_auto)
         self.reset_ui_accent_btn.setEnabled(not self.is_accent_auto)
 
     def update_previews(self):
@@ -2644,10 +2637,18 @@ class ColorEditorDialog(QDialog):
         self.update() 
 
     def pick_ui_bg_color(self):
-        return
+        new_color = self._get_themed_color(self.ui_bg_color, "Select Player Background")
+        if new_color.isValid():
+            self.ui_bg_color = new_color
+            self.is_bg_auto = False
+            self._update_bg_accent_buttons()
+            self._update_auto_text_color()
+            self.update_previews()
+            self.update_stylesheet()
 
     def reset_ui_bg_color(self):
-        return
+        self.is_bg_auto = True
+        self.regenerate_theme()
     
     def pick_ui_accent_color(self):
         new_color = self._get_themed_color(self.ui_accent_color, "Select Art Border Color")
@@ -3068,8 +3069,8 @@ class ColorEditorDialog(QDialog):
             return [int(c) for c in val[:3]]
 
         # --- Background ---
-        bg_rgb = None
-        if "ui_palette" in data:
+        bg_rgb = safe_rgb(data.get("player_bg_color"))
+        if not bg_rgb and "ui_palette" in data:
             bg_rgb = safe_rgb(data["ui_palette"][0])
         if not bg_rgb: bg_rgb = [40, 40, 40]
         bg_color = QColor(*bg_rgb)
@@ -3347,7 +3348,8 @@ class ColorEditorDialog(QDialog):
             
             # --- Update Internal State ---
             ui_palette = self.cached_data.get("ui_palette", main_window_state._current_ui_palette or [[30, 30, 30], [100, 100, 100]])
-            self.ui_bg_color = QColor(*ui_palette[0])
+            player_bg_rgb = self.cached_data.get("player_bg_color")
+            self.ui_bg_color = QColor(*player_bg_rgb) if player_bg_rgb else QColor(*ui_palette[0])
             self.ui_accent_color = QColor(*ui_palette[1]) if len(ui_palette) > 1 else self.ui_bg_color.lighter(150)
             
             text_color_rgb = self.cached_data.get("text_color")
@@ -3366,8 +3368,7 @@ class ColorEditorDialog(QDialog):
             self.blob_colors = [QColor(*c) for c in blob_palette]
             if not self.blob_colors:
                 self.blob_colors = [self.ui_accent_color, self.ui_accent_color.lighter(120), self.ui_accent_color.darker(120)]
-            self._sync_primary_tone_from_blobs()
-                
+
             # Update Lights
             lights_config = self.cached_data.get("lights_config", {})
             if lights_config.get("mode") == "custom" and lights_config.get("palette"):
@@ -3542,7 +3543,7 @@ class ColorEditorDialog(QDialog):
                 self.disabled_info_label.hide()
 
             # Reset Auto Flags
-            self.is_bg_auto = True
+            self.is_bg_auto = "ui_palette" not in self.cached_data and "player_bg_color" not in self.cached_data
             self.is_accent_auto = "ui_palette" not in self.cached_data
             self.is_blob_auto = "blob_palette" not in self.cached_data
             self.is_lights_auto = "lights_config" not in self.cached_data
@@ -3642,8 +3643,6 @@ class ColorEditorDialog(QDialog):
 
         # Global Visuals
         check("default_govee_brightness", "Lights: Default Brightness", self.default_brightness_slider.value() / 100.0, 1.0, float)
-        current_lava_preset = self.lava_preset_combo.currentData() or LAVA_LAMP_PRESET
-        check("lava_lamp_preset", "Background: Lava Lamp Style", current_lava_preset, LAVA_LAMP_PRESET)
         
         # --- NEW: Sound Volume Check ---
         check("sound_volume", "Sound: Effects Volume", self.sound_volume_slider.value() / 100.0, 0.5, float)
@@ -3706,15 +3705,16 @@ class ColorEditorDialog(QDialog):
                 potential_saves.append({"key": key, "label": label, "value": current_val, "changed": changed or in_cache or always_save, "type": "theme"})
 
         # Gather all potential settings
-        current_primary = list((self.blob_colors[0] if self.blob_colors else self.ui_bg_color).getRgb()[:3])
-        initial_primary = list((self.initial_blob_colors[0] if self.initial_blob_colors else self.initial_ui_bg_color).getRgb()[:3])
+        current_primary = list(self.ui_bg_color.getRgb()[:3])
+        initial_primary = list(self.initial_ui_bg_color.getRgb()[:3])
         check_auto(
             "ui_palette",
             "Track Theme: Core Colors",
-            self.is_accent_auto,
+            self.is_bg_auto and self.is_accent_auto,
             [current_primary, list(self.ui_accent_color.getRgb()[:3])],
             [initial_primary, list(self.initial_ui_accent_color.getRgb()[:3])],
         )
+        check_auto("player_bg_color", "Track Theme: Player Background", self.is_bg_auto, list(self.ui_bg_color.getRgb()[:3]), list(self.initial_ui_bg_color.getRgb()[:3]))
         check_auto("blob_palette", "Track Theme: Blob Colors", self.is_blob_auto, [list(c.getRgb()[:3]) for c in self.blob_colors], [list(c.getRgb()[:3]) for c in self.initial_blob_colors])
         check_manual("shadow_enabled", "Track Theme: Text Shadow", self.shadow_checkbox.isChecked(), self.initial_shadow_enabled)
         check_manual("album_art_border_enabled", "Track Theme: Artwork Frame", self.album_art_border_checkbox.isChecked(), self.initial_album_art_border_enabled)
@@ -3793,7 +3793,8 @@ class ColorEditorDialog(QDialog):
         album_config = {}
 
         # 1. Colors & Palette
-        primary_tone = list((self.blob_colors[0] if self.blob_colors else self.ui_bg_color).getRgb()[:3])
+        primary_tone = list(self.ui_bg_color.getRgb()[:3])
+        album_config["player_bg_color"] = list(self.ui_bg_color.getRgb()[:3])
         album_config["ui_palette"] = [
             primary_tone,
             list(self.ui_accent_color.getRgb()[:3])

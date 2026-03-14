@@ -48,7 +48,7 @@ class BackgroundRendererController:
 
     def update_mode(self, is_wallpaper_mode, is_custom_windowed_mode):
         force_raster = self._force_raster or self._capture_safe_mode
-        should_use_gl = self.supports_gl and not force_raster and not is_wallpaper_mode and not is_custom_windowed_mode
+        should_use_gl = self.supports_gl and not force_raster and not is_custom_windowed_mode
         if should_use_gl == self._use_gl:
             return False
 
@@ -64,8 +64,8 @@ class BackgroundRendererController:
         else:
             if force_raster:
                 reason = "capture-safe/forced-raster"
-            elif is_wallpaper_mode or is_custom_windowed_mode:
-                reason = "wallpaper/custom-window"
+            elif is_custom_windowed_mode:
+                reason = "custom-window"
             else:
                 reason = self._support_reason
             print(f"Background renderer mode: Raster ({reason})")

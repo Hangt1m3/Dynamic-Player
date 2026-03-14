@@ -133,6 +133,16 @@ vec3 get_palette_color(int i) {
 
 void main() {
     float aspect = u_resolution.x / max(u_resolution.y, 1.0);
+    // long_axis_factor > 1 when portrait (tall), = 1 when square/landscape.
+    // Scaling blob spread along the long edge ensures all palette colors stay
+    // distributed and visible instead of stacking in one band.
+    float long_axis_factor = max(1.0, 1.0 / max(aspect, 0.05));
+    float long_spread = min(long_axis_factor, 2.0);
+    // aspect_norm normalizes blob axis sizes to the short edge. Inside ellipse_field,
+    // axis values are in height-normalized units (d.x *= aspect), so axis.x=0.40 means
+    // the blob spans 0.40*height pixels wide. In portrait that exceeds screen width.
+    // Multiplying by min(1,aspect) keeps blobs proportional to the short edge.
+    float aspect_norm = min(1.0, aspect);
     vec2 centered = v_uv - vec2(0.5, 0.5);
     vec2 centered_vig = centered;
     centered_vig.x *= aspect;
@@ -181,39 +191,47 @@ void main() {
             float phase = fi * 1.93 + fj * 2.71 + hash1(fi * 7.1 + fj * 3.8) * 6.2831;
             vec2 c = blob_center(fi + 1.0 + fj * 0.41 + phase, t * speed);
 
-            // Wide offsets in normalized coordinates to keep edges alive on ultrawide/tall screens.
-            vec2 spread = vec2((fj - 1.5) * 0.50, (mod(fi + fj, 3.0) - 1.0) * 0.30);
+            // Distribute blobs along the long axis so portrait/ultrawide layouts show all palette colors.
+            vec2 spread = vec2(
+                (fj - 1.5) * 0.50,
+                (mod(fi + fj, 3.0) - 1.0) * 0.30 * long_spread
+            );
             spread += vec2(
                 0.22 * sin(t * (0.24 + 0.06 * speed) + phase),
-                0.20 * cos(t * (0.21 + 0.05 * speed) + phase * 0.7)
+                0.20 * cos(t * (0.21 + 0.05 * speed) + phase * 0.7) * long_spread
             );
             c += spread;
             c = clamp(c, vec2(0.01, 0.01), vec2(0.99, 0.99));
 
             float wobble = 0.08 * sin(t * (0.42 + 0.08 * speed) + idx * 2.3 + phase);
-            // Noticeably larger ellipses for stronger full-window coverage.
-            vec2 axis = vec2(0.40 - 0.03 * fj, 0.29 + wobble + 0.02 * fj);
+            // Scale axis by aspect_norm so blobs are always proportional to the short edge.
+            vec2 axis = vec2((0.40 - 0.03 * fj) * aspect_norm, (0.29 + wobble + 0.02 * fj) * aspect_norm);
             float angle = t * (0.06 + 0.022 * speed) + idx * 1.17 + phase * 0.35;
 
             float f = ellipse_field(uvw, c, axis, angle, aspect) * (0.90 + 0.18 * sin(t * (0.42 + 0.08 * speed) + idx));
 
             float body = smoothstep(0.08, 0.50, f * u_intensity);
             float core = smoothstep(0.26, 0.82, f * u_intensity);
+            float solid = smoothstep(0.52, 1.14, f * u_intensity);
             float halo = smoothstep(0.010, 0.18, f * u_intensity * 0.95);
             float soft = smoothstep(0.00, 0.12, f * u_intensity * 0.92);
             float mist = smoothstep(0.00, 0.09, f * u_intensity * 0.86);
             vec2 gel_vec = (uvw - c) * vec2(aspect, 1.0) + vec2(0.20, -0.18);
             float gel_highlight = core * smoothstep(0.30, 0.02, length(gel_vec));
-            float glow = halo * 0.58 + soft * 0.30 + mist * 0.12;
+            float glow = halo * 0.42 + soft * 0.22 + mist * 0.08;
 
             col = mix(col, blobColor, body * u_blobCoreMix);
             col = mix(col, blobColor, core * min(1.0, u_blobCoreMix * 1.18));
-            col += mix(blobColor, vec3(1.0), 0.58) * gel_highlight * 0.11;
-            col += blobColor * halo * u_blobHaloMix;
-            col += blobColor * soft * u_blobSoftMix;
-            col += blobColor * mist * u_blobMistMix;
+            if (j == 0) {
+                col = mix(col, blobColor, solid * 0.96);
+            }
+            vec3 highlightColor = mix(blobColor, vec3(1.0), 0.16);
+            col += highlightColor * gel_highlight * 0.045;
+            col += blobColor * halo * u_blobHaloMix * 0.72;
+            col += blobColor * soft * u_blobSoftMix * 0.68;
+            col += blobColor * mist * u_blobMistMix * 0.62;
             totalGlow += glow;
-            totalField += body;
+            totalField += body + solid * 0.65;
         }
     }
 
@@ -229,6 +247,14 @@ void main() {
 
     // Final pull toward base color so the background still reads as the dominant tone.
     col = mix(col, u_baseColor, u_finalBasePull);
+
+    // Roll off overbright peaks before clamping so vivid colors keep their hue instead of clipping toward white.
+    float peak = max(max(col.r, col.g), col.b);
+    if (peak > 0.92) {
+        float compress = mix(1.0, 0.92 / peak, smoothstep(0.92, 1.30, peak));
+        col *= compress;
+    }
+
     col = clamp(col, 0.0, 1.0);
     col *= u_globalOpacity;
 

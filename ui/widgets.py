@@ -1,4 +1,5 @@
 # ui/widgets.py
+import math
 import random
 import numpy as np
 from PyQt5.QtCore import (Qt, pyqtProperty, pyqtSignal, QObject, QPointF, QRectF, QSize, 
@@ -46,20 +47,34 @@ class BlobManager:
         if old_size.width() > 0 and old_size.height() > 0:
             w_ratio = size.width() / old_size.width()
             h_ratio = size.height() / old_size.height()
-            old_min = min(old_size.width(), old_size.height())
-            new_min = min(size.width(), size.height())
-            scale_ratio = new_min / old_min if old_min > 0 else 1.0
+            old_ref = self._coverage_radius_reference(old_size)
+            new_ref = self._coverage_radius_reference(size)
+            scale_ratio = new_ref / old_ref if old_ref > 0 else 1.0
             for blob in self.blobs + self.dying_blobs:
                 blob.handle_resize(w_ratio, h_ratio, scale_ratio)
         self.adjust_blob_count()
+
+    def _coverage_radius_reference(self, size=None):
+        target_size = size or self.parent_size
+        width = max(1, target_size.width())
+        height = max(1, target_size.height())
+        # Blobs should be ~38% of the short edge so multiple colors fit simultaneously
+        # on both portrait and landscape screens. The axis correction in the GL shader
+        # follows the same principle: size is always relative to min(width, height).
+        return float(min(width, height)) * 0.38
 
     def adjust_blob_count(self):
         if not self.palette: return
         unique_colors_count = max(1, len(set(c.rgba() for c in self.palette)))
         area = max(1, self.parent_size.width() * self.parent_size.height())
         area_target = max(0, min(8, area // 650000))
-        # Keep a denser overlap so black stays tonal and not visibly exposed.
-        target_count = max(10, min(24, unique_colors_count * 3 + area_target))
+        # Spawn more blobs for portrait/ultrawide screens so all palette colors
+        # remain visible along the long axis at the same time.
+        width = max(1, self.parent_size.width())
+        height = max(1, self.parent_size.height())
+        long_short = float(max(width, height)) / max(float(min(width, height)), 1.0)
+        aspect_boost = int(min(12, max(0, long_short - 1.05) * 6))
+        target_count = max(unique_colors_count * 3, min(36, unique_colors_count * 4 + area_target + aspect_boost))
 
         # Add blobs if we have too few
         while len(self.blobs) < target_count:
@@ -129,7 +144,7 @@ class Blob(QObject):
     def reposition(self, is_initial=False):
         if not is_initial and self.manager.palette: self.color = random.choice(self.manager.palette)
         duration = random.randint(20000, 45000)
-        ref_dim = min(self.manager.parent_size.width(), self.manager.parent_size.height())
+        ref_dim = self.manager._coverage_radius_reference()
         self.radius = random.uniform(0.62, 1.08) * ref_dim 
         self.update_pixmap()
         self.start_pos = self.manager.get_new_position(self.radius); self.end_pos = self.manager.get_new_position(self.radius)
@@ -164,22 +179,23 @@ class Blob(QObject):
             mid_color = QColor(self._color)
             edge_color = QColor(self._color)
             outer_color = QColor(self._color)
-            core_color.setAlpha(255)
-            mid_color.setAlpha(245)
-            edge_color.setAlpha(165)
+            core_color.setAlpha(238)
+            mid_color.setAlpha(215)
+            edge_color.setAlpha(132)
             outer_color.setAlpha(0)
             gradient.setColorAt(0.00, core_color)
             gradient.setColorAt(0.24, core_color)
             gradient.setColorAt(0.55, mid_color)
             gradient.setColorAt(0.82, edge_color)
-            gradient.setColorAt(0.96, QColor(self._color.red(), self._color.green(), self._color.blue(), 42))
+            gradient.setColorAt(0.96, QColor(self._color.red(), self._color.green(), self._color.blue(), 26))
             gradient.setColorAt(1.00, outer_color)
             painter.setBrush(QBrush(gradient)); painter.setPen(Qt.NoPen); painter.drawEllipse(0, 0, size, size)
 
             # Add a soft off-center highlight to make blobs read as gel instead of flat glow.
             highlight = QRadialGradient(size * 0.36, size * 0.32, size * 0.46)
-            highlight_inner = QColor(255, 255, 255, 72)
-            highlight_mid = QColor(255, 255, 255, 26)
+            highlight_base = QColor(self._color).lighter(118)
+            highlight_inner = QColor(highlight_base.red(), highlight_base.green(), highlight_base.blue(), 34)
+            highlight_mid = QColor(highlight_base.red(), highlight_base.green(), highlight_base.blue(), 10)
             highlight_outer = QColor(255, 255, 255, 0)
             highlight.setColorAt(0.00, highlight_inner)
             highlight.setColorAt(0.40, highlight_mid)
@@ -681,6 +697,251 @@ class ColorPreviewLabel(QLabel):
 
 class NoScrollComboBox(QComboBox):
     def wheelEvent(self, event): event.ignore()
+
+
+class LyricsLabel(QLabel):
+    """Displays a single time-synced lyric line with a crossfade animation on change."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._text_color = QColor(255, 255, 255, 255)
+        self._border_enabled = False
+        self._border_color = QColor("black")
+        self._border_width = 3
+        self._opacity = 0.0
+        self._full_text = ""
+        self._pending_text = None
+        self._max_lines = 2
+
+        self.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setStyleSheet("background: transparent;")
+
+        self._anim = QPropertyAnimation(self, b"lyricsOpacity")
+        self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+    # --- opacity property ---
+    def _get_opacity(self): return self._opacity
+    def _set_opacity(self, val):
+        self._opacity = max(0.0, min(1.0, val))
+        self.update()
+    lyricsOpacity = pyqtProperty(float, fget=_get_opacity, fset=_set_opacity)
+
+    def setTextColor(self, color):
+        self._text_color = QColor(color)
+        self.update()
+
+    def setMaxLines(self, lines):
+        self._max_lines = max(1, int(lines))
+        self.update()
+
+    def setBorder(self, enabled, color=None, width=None):
+        self._border_enabled = enabled
+        if color is not None:
+            self._border_color = QColor(color)
+        if width is not None:
+            self._border_width = width
+        self.update()
+
+    # Gradient stub — accepted but unused (keeps the style propagation loop clean)
+    def setGradient(self, enabled=False, secondary_color=None, direction=None):
+        pass
+
+    def reset(self):
+        """Synchronously stop all animations and clear state.
+        Caller is responsible for calling show() or hide() afterwards.
+        """
+        self._anim.stop()
+        try:
+            self._anim.finished.disconnect()
+        except TypeError:
+            pass
+        self._pending_text = None
+        self._full_text = ""
+        super().setText("")
+        self._opacity = 0.0
+        self.update()
+
+    def setLine(self, text):
+        """Set a new lyric line, crossfading if the text has changed."""
+        if text == self._full_text:
+            return
+        if self._opacity > 0.01 and self._full_text:
+            # Fade out current text, then swap and fade in
+            self._pending_text = text
+            self._anim.stop()
+            self._anim.setDuration(180)
+            self._anim.setStartValue(self._opacity)
+            self._anim.setEndValue(0.0)
+            try:
+                self._anim.finished.disconnect()
+            except TypeError:
+                pass
+            self._anim.finished.connect(self._swap_and_fade_in)
+            self._anim.start()
+        else:
+            self._full_text = text
+            super().setText(text)
+            self._fade_in()
+
+    def _swap_and_fade_in(self):
+        try:
+            self._anim.finished.disconnect()
+        except TypeError:
+            pass
+        if self._pending_text is not None:
+            self._full_text = self._pending_text
+            super().setText(self._pending_text)
+            self._pending_text = None
+        self._fade_in()
+
+    def _fade_in(self):
+        self.show()  # Ensure visible (e.g. after hideLine collapsed the widget)
+        self._anim.stop()
+        self._anim.setDuration(250)
+        self._anim.setStartValue(self._opacity)
+        self._anim.setEndValue(1.0)
+        try:
+            self._anim.finished.disconnect()
+        except TypeError:
+            pass
+        self._anim.start()
+
+    def showLine(self):
+        """Make the widget visible and fade in the current text."""
+        self.show()
+        self._fade_in()
+
+    def clearLine(self):
+        """Fade out the current line for a break in the song (widget stays visible in layout)."""
+        if self._opacity < 0.01:
+            self._full_text = ""
+            super().setText("")
+            return
+        self._anim.stop()
+        self._anim.setDuration(500)
+        self._anim.setStartValue(self._opacity)
+        self._anim.setEndValue(0.0)
+        try:
+            self._anim.finished.disconnect()
+        except TypeError:
+            pass
+        self._anim.finished.connect(self._on_cleared)
+        self._anim.start()
+
+    def _on_cleared(self):
+        try:
+            self._anim.finished.disconnect()
+        except TypeError:
+            pass
+        self._full_text = ""
+        super().setText("")
+
+    def hideLine(self):
+        """Fade out and hide (collapses layout space — used for no-lyrics / idle)."""
+        if not self.isVisible() or self._opacity < 0.01:
+            self.hide()
+            return
+        self._anim.stop()
+        self._anim.setDuration(200)
+        self._anim.setStartValue(self._opacity)
+        self._anim.setEndValue(0.0)
+        try:
+            self._anim.finished.disconnect()
+        except TypeError:
+            pass
+        self._anim.finished.connect(self.hide)
+        self._anim.start()
+
+    def _text_width(self, metrics, text):
+        if hasattr(metrics, "horizontalAdvance"):
+            return metrics.horizontalAdvance(text)
+        return metrics.width(text)
+
+    def _wrap_text_lines(self, metrics, text, max_width):
+        paragraphs = text.splitlines() or [text]
+        lines = []
+
+        for paragraph in paragraphs:
+            words = paragraph.split()
+            if not words:
+                if paragraph.strip() == "":
+                    continue
+                words = [paragraph]
+
+            current = words[0]
+            if self._text_width(metrics, current) > max_width:
+                current = metrics.elidedText(current, Qt.ElideRight, max_width)
+
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if self._text_width(metrics, candidate) <= max_width:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
+                    if self._text_width(metrics, current) > max_width:
+                        current = metrics.elidedText(current, Qt.ElideRight, max_width)
+
+            lines.append(current)
+
+        if not lines:
+            return []
+
+        if len(lines) > self._max_lines:
+            head = lines[: self._max_lines - 1]
+            tail = " ".join(lines[self._max_lines - 1 :])
+            tail = metrics.elidedText(tail, Qt.ElideRight, max_width)
+            return head + [tail]
+
+        return lines
+
+    def paintEvent(self, event):
+        if not self._full_text or self._opacity < 0.01:
+            return
+        painter = QPainter()
+        if not painter.begin(self):
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            # Bake local fade opacity into color alphas so QGraphicsDropShadowEffect
+            # correctly picks up the transparency when rendering its shadow blur.
+            alpha_scale = self._opacity
+            text_color = QColor(self._text_color)
+            text_color.setAlphaF(text_color.alphaF() * alpha_scale)
+            border_color = QColor(self._border_color)
+            border_color.setAlphaF(border_color.alphaF() * alpha_scale)
+            metrics = QFontMetrics(self.font())
+            rect = self.rect()
+            max_width = max(24, rect.width() - 10)
+            lines = self._wrap_text_lines(metrics, self._full_text, max_width)
+            if not lines:
+                return
+
+            line_height = metrics.height()
+            line_gap = 2
+            total_height = (line_height * len(lines)) + (line_gap * max(0, len(lines) - 1))
+            y = (rect.height() - total_height) / 2 + metrics.ascent()
+
+            for line in lines:
+                x = (rect.width() - self._text_width(metrics, line)) / 2
+                path = QPainterPath()
+                path.addText(x, y, self.font(), line)
+
+                if self._border_enabled:
+                    pen = QPen(border_color)
+                    pen.setWidth(self._border_width)
+                    pen.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawPath(path)
+
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(text_color)
+                painter.drawPath(path)
+                y += line_height + line_gap
+        finally:
+            painter.end()
 
 class CircularButton(QPushButton):
     def __init__(self, tooltip="", icon_char="", parent=None):

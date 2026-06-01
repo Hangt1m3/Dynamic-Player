@@ -1876,6 +1876,83 @@ class SpotifyPlayer(QMainWindow):
             self._last_spotify_track_data['is_playing'] = True
             self._on_spotify_track_changed(self._last_spotify_track_data)
 
+    def _action_play_pause(self):
+        if not self.sp:
+            return
+        try:
+            sp = self._get_spotify_client()
+            if self._is_paused:
+                sp.start_playback()
+            else:
+                sp.pause_playback()
+        except Exception as e:
+            print(f"Error toggling play/pause: {e}")
+
+    def _action_shuffle(self):
+        if not self.sp:
+            return
+        try:
+            sp = self._get_spotify_client()
+            new_state = not self._shuffle_state
+            device_id = self._get_active_device_id(sp)
+            self._set_shuffle_state(sp, new_state, device_id=device_id)
+            self._shuffle_state = new_state
+            self.player_controls_bar.set_shuffle(new_state)
+        except Exception as e:
+            print(f"Error toggling shuffle: {e}")
+
+    def _action_repeat(self):
+        if not self.sp:
+            return
+        try:
+            sp = self._get_spotify_client()
+            cycle = {"off": "context", "context": "track", "track": "off"}
+            new_mode = cycle.get(self._repeat_mode, "off")
+            device_id = self._get_active_device_id(sp)
+            if device_id:
+                sp.repeat(new_mode, device_id=device_id)
+            else:
+                sp.repeat(new_mode)
+            self._repeat_mode = new_mode
+            self.player_controls_bar.set_repeat_mode(new_mode)
+        except Exception as e:
+            print(f"Error cycling repeat mode: {e}")
+
+    def _action_add_to_playlist(self):
+        if not self.sp:
+            return
+        track_data = self._prev_track_data.get("item") if self._prev_track_data else None
+        if not track_data:
+            return
+        track_uri = track_data.get("uri")
+        if not track_uri:
+            return
+        # Open the playlist panel so the user can pick a destination
+        if hasattr(self, 'playlist_panel'):
+            self._reposition_overlay_if_visible()
+            self.playlist_panel.show()
+
+    def _action_liked(self):
+        if not self.sp:
+            return
+        track_data = self._prev_track_data.get("item") if self._prev_track_data else None
+        if not track_data:
+            return
+        track_id = track_data.get("id")
+        if not track_id:
+            return
+        try:
+            sp = self._get_spotify_client()
+            new_liked = not self._is_liked
+            if new_liked:
+                sp.current_user_saved_tracks_add([track_id])
+            else:
+                sp.current_user_saved_tracks_delete([track_id])
+            self._is_liked = new_liked
+            self.player_controls_bar.set_liked(new_liked)
+        except Exception as e:
+            print(f"Error toggling liked state: {e}")
+
     def _finish_text_animation(self, animation):
         if animation in self._active_text_animations:
             self._active_text_animations.remove(animation)

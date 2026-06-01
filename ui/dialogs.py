@@ -13,7 +13,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                              QComboBox, QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, 
                              QTextBrowser, QFrame, QColorDialog, QFileDialog, QTabWidget, 
                              QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit, 
-                             QApplication, QAbstractButton)
+                             QGridLayout,
+                             QApplication, QAbstractButton, QStyle, QStyleOptionSlider)
 from PyQt5.QtGui import (QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, 
                          QGuiApplication, QPixmap, QImage, QKeySequence)
 
@@ -34,15 +35,41 @@ class ThemedDialog(QDialog):
         self.bg_color = bg_color or QColor(30, 30, 30); self.text_color = text_color or QColor(255, 255, 255)
         self.accent_color = accent_color or QColor(100, 100, 100); self.border_enabled = border_enabled
         self.border_color = border_color or QColor("black"); self.border_width = border_width; self.drag_pos = None
-        self._main_layout = QVBoxLayout(self); self._main_layout.setContentsMargins(0, 0, 0, 0); self._main_layout.setSpacing(0)
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
 
-        self.title_bar = QWidget(); self.title_bar.setFixedHeight(40); title_layout = QHBoxLayout(self.title_bar); title_layout.setContentsMargins(15, 0, 10, 0)
-        self.title_label = BorderedLabel(title); self.title_label.setBorder(self.border_enabled, self.border_color, self.border_width)
-        self.title_label.setCustomTextColor(self.text_color); self.title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        self.close_btn = QPushButton("×"); self.close_btn.setFixedSize(30, 30); self.close_btn.setCursor(Qt.PointingHandCursor); self.close_btn.clicked.connect(self.reject)
-        self.close_btn.setStyleSheet(f"QPushButton {{ border: none; background: transparent; font-size: 20px; color: {self.text_color.name()}; }} QPushButton:hover {{ color: #ff5555; background: transparent; border: none; }}")
-        title_layout.addWidget(self.title_label); title_layout.addStretch(); title_layout.addWidget(self.close_btn)
-        self._main_layout.addWidget(self.title_bar); self.content_widget = QWidget(); self.content_layout = QVBoxLayout(self.content_widget); self.content_layout.setContentsMargins(20, 10, 20, 20); self._main_layout.addWidget(self.content_widget)
+        self._TITLE_BAR_HEIGHT = 50
+        self.title_bar = QWidget()
+        self.title_bar.setFixedHeight(self._TITLE_BAR_HEIGHT)
+        self.title_bar.setStyleSheet("background: transparent;")
+        title_layout = QHBoxLayout(self.title_bar)
+        title_layout.setContentsMargins(16, 0, 10, 0)
+        title_layout.setSpacing(8)
+
+        self.title_label = BorderedLabel(title)
+        self.title_label.setBorder(self.border_enabled, self.border_color, self.border_width)
+        self.title_label.setCustomTextColor(self.text_color)
+        self.title_label.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+
+        self.close_btn = QPushButton("×")
+        self.close_btn.setFixedSize(32, 32)
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.clicked.connect(self.reject)
+
+        title_layout.addWidget(self.title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(self.close_btn)
+        self._main_layout.addWidget(self.title_bar)
+
+        self._title_separator = QWidget()
+        self._title_separator.setFixedHeight(1)
+        self._main_layout.addWidget(self._title_separator)
+
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(20, 14, 20, 20)
+        self._main_layout.addWidget(self.content_widget)
         self.apply_theme()
     def _apply_button_focus_policy(self):
         # Prevent Tab key from cycling to buttons in modal menus.
@@ -53,20 +80,50 @@ class ThemedDialog(QDialog):
         self._apply_button_focus_policy()
         super().showEvent(event)
 
-    def apply_theme(self): self.setStyleSheet(get_common_stylesheet(self.bg_color, self.text_color, self.accent_color)); self.update()
+    def apply_theme(self):
+        self.setStyleSheet(get_common_stylesheet(self.bg_color, self.text_color, self.accent_color))
+        ar, ag, ab = self.accent_color.red(), self.accent_color.green(), self.accent_color.blue()
+        if hasattr(self, '_title_separator'):
+            self._title_separator.setStyleSheet(f"background: rgba({ar}, {ag}, {ab}, 55);")
+        if hasattr(self, 'close_btn'):
+            tc = self.text_color.name()
+            self.close_btn.setStyleSheet(
+                f"QPushButton {{ border: none; background: transparent; font-size: 20px; color: {tc}; border-radius: 16px; font-weight: 300; }}"
+                f" QPushButton:hover {{ color: #ffffff; background: #e0454a; border: none; }}"
+                f" QPushButton:pressed {{ background: #c03030; color: #ffffff; }}"
+            )
+        self.update()
     def paintEvent(self, event):
-        if self.isMinimized(): return
+        if self.isMinimized():
+            return
         painter = QPainter()
         if not painter.begin(self):
             return
         try:
-            painter.setRenderHint(QPainter.Antialiasing); path = QPainterPath(); path.addRoundedRect(QRectF(self.rect()), 12, 12)
-            painter.fillPath(path, self.bg_color); painter.setPen(QPen(self.accent_color, 1)); painter.drawPath(path)
+            painter.setRenderHint(QPainter.Antialiasing)
+            outer_path = QPainterPath()
+            outer_path.addRoundedRect(QRectF(self.rect()), 14, 14)
+
+            painter.setClipPath(outer_path)
+            painter.fillRect(self.rect(), self.bg_color)
+
+            title_h = getattr(self, '_TITLE_BAR_HEIGHT', 50)
+            header_color = QColor(self.bg_color)
+            if header_color.lightnessF() > 0.5:
+                header_color = header_color.darker(108)
+            else:
+                header_color = header_color.lighter(112)
+            painter.fillRect(0, 0, self.width(), title_h, header_color)
+
+            painter.setClipping(False)
+            painter.setPen(QPen(self.accent_color, 1))
+            painter.drawPath(outer_path)
         finally:
             painter.end()
     def mousePressEvent(self, event):
-
-        if event.button() == Qt.LeftButton and event.y() < 50: self.drag_pos = event.globalPos() - self.frameGeometry().topLeft(); event.accept()
+        if event.button() == Qt.LeftButton and event.y() < 58:
+            self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.LeftButton and self.drag_pos: self.move(event.globalPos() - self.drag_pos); event.accept()
     def mouseReleaseEvent(self, event): self.drag_pos = None
@@ -156,9 +213,14 @@ class SpotifySetupDialog(ThemedDialog):
     def __init__(self, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
         super().__init__(parent, "Spotify API Setup (Optional)", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
         layout = QVBoxLayout()
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        # Info text with emphasis on skip option
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
+
+        # Info card
+        info_frame = QFrame()
+        info_frame.setObjectName("InfoCard")
+        info_frame_layout = QVBoxLayout(info_frame)
+        info_frame_layout.setContentsMargins(14, 12, 14, 12)
         info_label = QLabel(
             "<b>Set Up Spotify (Optional):</b><br><br>"
             "To use Spotify playback, enter your API credentials below.<br>"
@@ -166,7 +228,8 @@ class SpotifySetupDialog(ThemedDialog):
             "or other media sources instead."
         )
         info_label.setWordWrap(True)
-        layout.addWidget(info_label)
+        info_frame_layout.addWidget(info_label)
+        layout.addWidget(info_frame)
         
         id_label = QLabel("Client ID:"); secret_label = QLabel("Client Secret:")
         self.id_input = QLineEdit(); self.secret_input = QLineEdit()
@@ -177,14 +240,26 @@ class SpotifySetupDialog(ThemedDialog):
         self.id_input.setText(settings.value("spotify_client_id", ""))
         self.secret_input.setText(settings.value("spotify_client_secret", ""))
         
-        form_layout = QFormLayout(); form_layout.addRow(id_label, self.id_input); form_layout.addRow(secret_label, self.secret_input)
-        layout.addLayout(form_layout);
-        
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+        form_layout.addRow(id_label, self.id_input)
+        form_layout.addRow(secret_label, self.secret_input)
+        layout.addLayout(form_layout)
+
         btn_layout = QHBoxLayout()
-        skip_btn = QPushButton("Skip & Use Media Player"); skip_btn.clicked.connect(self.skip); skip_btn.setMinimumWidth(150)
-        save_btn = QPushButton("Save Credentials"); save_btn.setDefault(True); save_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(skip_btn);btn_layout.addStretch();btn_layout.addWidget(cancel_btn);btn_layout.addWidget(save_btn)
+        btn_layout.setSpacing(8)
+        skip_btn = QPushButton("Skip & Use Media Player")
+        skip_btn.clicked.connect(self.skip)
+        skip_btn.setMinimumWidth(150)
+        save_btn = QPushButton("Save Credentials")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(skip_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
         self.content_layout.addLayout(layout)
 
@@ -205,9 +280,14 @@ class AppleMusicSetupDialog(ThemedDialog):
     def __init__(self, parent=None, bg_color=None, text_color=None, accent_color=None, border_enabled=False, border_color=None, border_width=3):
         super().__init__(parent, "Apple Music API Setup (Optional)", bg_color, text_color, accent_color, border_enabled, border_color, border_width)
         layout = QVBoxLayout()
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        # Info text
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
+
+        # Info card
+        info_frame = QFrame()
+        info_frame.setObjectName("InfoCard")
+        info_frame_layout = QVBoxLayout(info_frame)
+        info_frame_layout.setContentsMargins(14, 12, 14, 12)
         info_label = QLabel(
             "<b>Set Up Apple Music (Optional):</b><br><br>"
             "To use Apple Music with enhanced features, you'll need MusicKit API credentials.<br>"
@@ -222,7 +302,8 @@ class AppleMusicSetupDialog(ThemedDialog):
         )
         info_label.setWordWrap(True)
         info_label.setOpenExternalLinks(True)
-        layout.addWidget(info_label)
+        info_frame_layout.addWidget(info_label)
+        layout.addWidget(info_frame)
         
         # Input fields
         team_id_label = QLabel("Team ID:")
@@ -260,6 +341,7 @@ class AppleMusicSetupDialog(ThemedDialog):
         
         # Button layout
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
         skip_btn = QPushButton("Skip & Use Basic Integration")
         skip_btn.clicked.connect(self.skip)
         skip_btn.setMinimumWidth(180)
@@ -487,6 +569,24 @@ class ColorEditorDialog(QDialog):
     config_saved = pyqtSignal(str, dict) # album_id, {"palette": ..., "text_color": ...}
     art_changed = pyqtSignal(str, str, str) # album_id, track_id, image_path
 
+    GRADIENT_DIRECTION_OPTIONS = [
+        "0° East",
+        "45° NE",
+        "90° North",
+        "135° NW",
+        "180° West",
+        "225° SW",
+        "270° South",
+        "315° SE",
+    ]
+    TRACK_TRANSITION_EASING_OPTIONS = [
+        "Out Cubic",
+        "In Out Cubic",
+        "Out Quad",
+        "In Out Quad",
+        "Linear",
+    ]
+
     def __init__(self, album_art_pixmap, album_id, track_id, color_cache, parent = None, media_source = 'spotify'):
         super().__init__(parent, Qt.FramelessWindowHint | Qt.Tool)
         self.setObjectName("ThemedDialog") 
@@ -511,6 +611,7 @@ class ColorEditorDialog(QDialog):
         self.ui_labels = []
         self._loading_state = False
         self._is_closing_via_save = False
+        self._handling_close_credentials = False
 
         # Event filter for applying borders to all standard widgets
         self.ui_event_filter = LabelBorderEventFilter(False, "black", 3, "white", self)
@@ -552,8 +653,23 @@ class ColorEditorDialog(QDialog):
         self.blob_density = main_window_state.blob_density
         
         settings = QSettings("SpotifySync", "App")
+        self._auto_save_enabled = settings.value("auto_save_enabled", "false") == "true"
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.timeout.connect(self._flush_auto_save)
+        self._auto_save_connections_ready = False
+        self._auto_save_on_change = False
+        self._auto_save_suspended = False
+        self.theme_library_dialog = None
+        self.theme_library_grid = None
+        self.theme_library_content = None
         self.initial_default_progress_bar_enabled = settings.value("default_progress_bar_enabled", "false") == "true"
         self.initial_default_text_border_size = int(settings.value("default_text_border_size", 3))
+        self.initial_track_transition_duration_ms = int(settings.value("track_transition_duration_ms", 800))
+        self.initial_track_transition_duration_ms = max(250, min(2200, self.initial_track_transition_duration_ms))
+        self.initial_track_transition_easing = str(settings.value("track_transition_easing", "Out Cubic") or "Out Cubic")
+        if self.initial_track_transition_easing not in self.TRACK_TRANSITION_EASING_OPTIONS:
+            self.initial_track_transition_easing = "Out Cubic"
         
         progress_bar_val = cached_data.get("progress_bar_enabled")
         self.is_progress_bar_overridden = progress_bar_val is not None
@@ -579,7 +695,9 @@ class ColorEditorDialog(QDialog):
         self.title_gradient_enabled = bool(cached_data.get("title_gradient_enabled", False))
         title_gradient_color_rgb = cached_data.get("title_gradient_color", [255, 255, 255])
         self.title_gradient_color = QColor(*title_gradient_color_rgb)
-        self.title_gradient_direction = str(cached_data.get("title_gradient_direction", "Left to Right"))
+        self.title_gradient_direction = self._normalize_gradient_direction_label(
+            cached_data.get("title_gradient_direction", "Left to Right")
+        )
         
         text_border_enabled = cached_data.get("text_border_enabled", main_window_state._current_text_border_enabled)
         text_border_color_rgb = cached_data.get("text_border_color")
@@ -701,11 +819,44 @@ class ColorEditorDialog(QDialog):
         self._pending_load_state = None
         self._build_generator = None
 
+        # Root layout (no margins — title bar goes edge-to-edge)
         layout = QVBoxLayout(self)
-        self.main_layout = QHBoxLayout() 
-        layout.addLayout(self.main_layout)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # --- Title Bar ---
+        self._SETTINGS_TITLE_BAR_HEIGHT = 50
+        self._settings_title_bar = QWidget()
+        self._settings_title_bar.setFixedHeight(self._SETTINGS_TITLE_BAR_HEIGHT)
+        self._settings_title_bar.setStyleSheet("background: transparent;")
+        tb_layout = QHBoxLayout(self._settings_title_bar)
+        tb_layout.setContentsMargins(16, 0, 10, 0)
+        tb_layout.setSpacing(8)
+        self._settings_title_label = QLabel("Settings")
+        self._settings_title_label.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+        self._settings_close_btn = QPushButton("×")
+        self._settings_close_btn.setFixedSize(32, 32)
+        self._settings_close_btn.setCursor(Qt.PointingHandCursor)
+        self._settings_close_btn.clicked.connect(self.reject)
+        tb_layout.addWidget(self._settings_title_label)
+        tb_layout.addStretch()
+        tb_layout.addWidget(self._settings_close_btn)
+        layout.addWidget(self._settings_title_bar)
+
+        # Separator
+        self._settings_title_sep = QWidget()
+        self._settings_title_sep.setFixedHeight(1)
+        layout.addWidget(self._settings_title_sep)
+
+        # Content area
+        content_area = QWidget()
+        content_area_layout = QVBoxLayout(content_area)
+        content_area_layout.setContentsMargins(20, 10, 20, 0)
+        content_area_layout.setSpacing(0)
+        self.main_layout = QHBoxLayout()
         self.main_layout.setSpacing(20)
+        content_area_layout.addLayout(self.main_layout)
+        layout.addWidget(content_area)
 
         # Loading Indicator (Visible initially)
         self.loading_container = QWidget()
@@ -738,11 +889,486 @@ class ColorEditorDialog(QDialog):
             QTimer.singleShot(50, self._process_build_step)
         except StopIteration:
             self._build_generator = None
+            self._install_auto_save_connections()
+            self._configure_slider_interaction()
+            self._refresh_save_buttons_for_current_tab()
+
+    def _configure_slider_interaction(self):
+        """Keep sliders responsive and prevent accidental wheel changes while scrolling."""
+        for slider in self.findChildren(QSlider):
+            slider.setTracking(True)
+            slider.setFocusPolicy(Qt.StrongFocus)
+            slider.installEventFilter(self)
 
     def _on_tab_changed(self, index):
-        """Refreshes the theme browser whenever the user switches to that tab."""
-        if self.tab_widget.tabText(index) == "Theme Library":
+        self._refresh_save_buttons_for_current_tab()
+
+    def _normalize_gradient_direction_label(self, direction):
+        raw = str(direction or "").strip()
+        if not raw:
+            return self.GRADIENT_DIRECTION_OPTIONS[0]
+
+        lookup = {
+            "left to right": self.GRADIENT_DIRECTION_OPTIONS[0],
+            "bottom-left to top-right": self.GRADIENT_DIRECTION_OPTIONS[1],
+            "top to bottom": self.GRADIENT_DIRECTION_OPTIONS[6],
+            "bottom to top": self.GRADIENT_DIRECTION_OPTIONS[2],
+            "top-right to bottom-left": self.GRADIENT_DIRECTION_OPTIONS[5],
+            "bottom-right to top-left": self.GRADIENT_DIRECTION_OPTIONS[3],
+            "right to left": self.GRADIENT_DIRECTION_OPTIONS[4],
+            "top-left to bottom-right": self.GRADIENT_DIRECTION_OPTIONS[7],
+        }
+
+        lowered = raw.lower()
+        if lowered in lookup:
+            return lookup[lowered]
+
+        if "°" in raw:
+            try:
+                angle = int(float(raw.split("°", 1)[0])) % 360
+                steps = angle // 45
+                return self.GRADIENT_DIRECTION_OPTIONS[steps]
+            except (ValueError, TypeError, IndexError):
+                return self.GRADIENT_DIRECTION_OPTIONS[0]
+
+        return self.GRADIENT_DIRECTION_OPTIONS[0]
+
+    def _current_tab_label(self):
+        if not hasattr(self, "tab_widget") or self.tab_widget.count() == 0:
+            return ""
+        return self.tab_widget.tabText(self.tab_widget.currentIndex())
+
+    def _tab_allows_manual_save(self, tab_label=None):
+        tab_label = tab_label or self._current_tab_label()
+        if tab_label == "Track Theme":
+            return self.media_source == 'spotify'
+        return tab_label in {"Notifications", "App Defaults", "Connections", "Keyboard Shortcuts"}
+
+    def _tab_allows_theme_snapshot(self, tab_label=None):
+        tab_label = tab_label or self._current_tab_label()
+        return tab_label == "Track Theme" and self.media_source == 'spotify'
+
+    def _refresh_save_buttons_for_current_tab(self):
+        if not hasattr(self, 'quick_save_btn'):
+            return
+
+        show_manual_save = (not self._auto_save_enabled) and self._tab_allows_manual_save()
+        show_theme_snapshot = (not self._auto_save_enabled) and self._tab_allows_theme_snapshot()
+        show_done = self._auto_save_enabled
+
+        self.quick_save_btn.setVisible(show_manual_save)
+        self.save_button.setVisible(show_manual_save)
+        self.save_full_theme_btn.setVisible(show_theme_snapshot)
+        if hasattr(self, 'done_button'):
+            self.done_button.setVisible(show_done)
+        if hasattr(self, 'action_layout'):
+            self.action_layout.invalidate()
+
+    def _install_auto_save_connections(self):
+        if self._auto_save_connections_ready:
+            return
+
+        for checkbox in self.findChildren(QCheckBox):
+            checkbox.toggled.connect(self._schedule_auto_save)
+
+        for radio in self.findChildren(QRadioButton):
+            radio.toggled.connect(self._schedule_auto_save)
+
+        for combo in self.findChildren(QComboBox):
+            combo.currentTextChanged.connect(self._schedule_auto_save)
+            combo.currentIndexChanged.connect(self._schedule_auto_save)
+
+        for slider in self.findChildren(QSlider):
+            slider.valueChanged.connect(self._schedule_auto_save)
+
+        for line_edit in self.findChildren(QLineEdit):
+            if line_edit is getattr(self, 'font_search_input', None):
+                continue
+            line_edit.textChanged.connect(self._schedule_auto_save)
+
+        if hasattr(self, 'govee_device_table'):
+            self.govee_device_table.itemChanged.connect(self._schedule_auto_save)
+
+        self._auto_save_connections_ready = True
+
+    def _schedule_auto_save(self, *args):
+        if not self._auto_save_enabled or not self._auto_save_on_change or not self._is_ui_built or self._loading_state or self._auto_save_suspended:
+            return
+        self._auto_save_timer.start(225)
+
+    def _collect_pending_changes(self):
+        global_changes = self._get_global_changes()
+        theme_changes = self._collect_theme_changes() if self.media_source == 'spotify' else []
+        return global_changes, theme_changes
+
+    def _persist_selected_changes(self, keys_to_save, global_changes, theme_changes, quick=False, close_after=True, allow_restart_prompt=True):
+        settings = QSettings("SpotifySync", "App")
+
+        for item in global_changes:
+            if item['key'] not in keys_to_save:
+                continue
+            val = item['value']
+            if item['key'] == "keyboard_shortcuts":
+                settings.setValue(item['key'], json.dumps(self._normalize_shortcut_bindings(val)))
+            elif isinstance(val, bool):
+                settings.setValue(item['key'], "true" if val else "false")
+            else:
+                settings.setValue(item['key'], val)
+
+        if "keyboard_shortcuts" in keys_to_save and self.parent() and hasattr(self.parent(), 'apply_shortcut_bindings'):
+            self.parent().apply_shortcut_bindings(self.shortcut_bindings, persist=False)
+
+        needs_art_reload = False
+        did_persist_custom_art = False
+        if self.media_source == 'spotify':
+            album_config = self.cached_data.copy()
+            theme_keys_processed = False
+            needs_art_reload = self._custom_art_changed or (self._active_custom_art_scope() != self.initial_custom_art_scope)
+            should_persist_custom_art = needs_art_reload and (quick or "custom_art_scope" in keys_to_save)
+
+            for item in theme_changes:
+                if item['key'] not in keys_to_save:
+                    continue
+                if item['key'] == "custom_art_scope":
+                    continue
+                theme_keys_processed = True
+                if item['value'] == "__REMOVE__":
+                    album_config.pop(item['key'], None)
+                else:
+                    album_config[item['key']] = item['value']
+
+            if theme_keys_processed:
+                if hasattr(self, 'current_album_name') and self.current_album_name:
+                    album_config['meta_album'] = self.current_album_name
+                if hasattr(self, 'current_artist_name') and self.current_artist_name:
+                    album_config['meta_artist'] = self.current_artist_name
+
+                self.color_cache.set_album_data(self.album_id, album_config)
+
+                slider_value = self.blob_amount_slider.value()
+                if self.parent():
+                    self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
+
+            if should_persist_custom_art:
+                self._persist_custom_art()
+                self.initial_custom_art_scope = self._active_custom_art_scope()
+                self._custom_art_changed = False
+                did_persist_custom_art = True
+
+            if theme_keys_processed or did_persist_custom_art:
+                self._refresh_saved_theme_baseline()
+
+        if keys_to_save or quick:
+            emit_config = self.color_cache.get_album_data(self.album_id) or {}
+            if self.media_source == 'spotify' and did_persist_custom_art:
+                emit_config = dict(emit_config)
+                emit_config["_reload_art"] = True
+            self.config_saved.emit(self.album_id, emit_config)
             self.populate_theme_browser()
+
+        if allow_restart_prompt:
+            self._handle_credential_changes(close_after=close_after)
+        elif close_after:
+            self.accept()
+
+    def _refresh_saved_theme_baseline(self):
+        track_cache = self.color_cache.get_album_data(self.track_id) or {}
+        cached_data = track_cache or self.color_cache.get_album_data(self.album_id) or {}
+        if isinstance(cached_data, list):
+            ui_palette = [cached_data] if not isinstance(cached_data[0], list) else cached_data
+            cached_data = {"ui_palette": ui_palette}
+
+        self.cached_data = cached_data
+        self.initial_ui_bg_color = QColor(self.ui_bg_color)
+        self.initial_ui_accent_color = QColor(self.ui_accent_color)
+        self.initial_ui_text_color = QColor(self.ui_text_color)
+        self.initial_is_text_color_auto = self.is_text_color_auto
+        self.initial_blob_colors = [QColor(color) for color in self.blob_colors]
+        self.initial_shadow_enabled = self.shadow_checkbox.isChecked()
+        self.initial_title_case = self._get_selected_case(self.title_case_radios)
+        self.initial_artist_case = self._get_selected_case(self.artist_case_radios)
+        self.initial_text_border_enabled = self.text_border_checkbox.isChecked()
+        self.initial_is_text_border_auto = self.is_text_border_auto
+        self.initial_text_border_color = QColor(self.text_border_color)
+        self.initial_is_border_size_overridden = self.override_border_size_checkbox.isChecked()
+        self.initial_text_border_size = self.text_border_size_slider.value()
+        self.initial_album_art_border_enabled = self.album_art_border_checkbox.isChecked()
+        self.initial_title_gradient_enabled = self.title_gradient_checkbox.isChecked()
+        self.initial_title_gradient_color = QColor(self.title_gradient_color)
+        self.initial_title_gradient_direction = self.title_gradient_dir_combo.currentText()
+        self.initial_is_font_size_overridden = self.override_size_checkbox.isChecked()
+        self.initial_font_size_scale = self.font_size_slider.value()
+        self.initial_is_progress_bar_overridden = self.override_progress_bar_checkbox.isChecked()
+        self.initial_progress_bar_enabled = self.progress_bar_checkbox.isChecked()
+        self.initial_font_family = self.font_family_combo.currentText()
+        self.initial_font_style = self.font_style_combo.currentText()
+        self.initial_lights_palette = [QColor(picker['color']) for picker in self.govee_color_pickers]
+        self.effective_initial_lights_palette = [QColor(picker['color']) for picker in self.govee_color_pickers]
+        self.initial_is_brightness_overridden = self.override_brightness_checkbox.isChecked()
+        self.initial_track_brightness = self.govee_brightness_slider.value()
+        self.initial_custom_art_scope = self._active_custom_art_scope()
+        self._custom_art_changed = False
+
+    def _flush_auto_save(self):
+        if not self._auto_save_enabled or self._loading_state or self._auto_save_suspended:
+            return
+
+        global_changes, theme_changes = self._collect_pending_changes()
+        keys_to_save = [item['key'] for item in (global_changes + theme_changes) if item['changed']]
+        if not keys_to_save:
+            return
+
+        self._persist_selected_changes(keys_to_save, global_changes, theme_changes, quick=True, close_after=False, allow_restart_prompt=False)
+
+    def _handle_credential_changes(self, close_after=True):
+        settings = QSettings("SpotifySync", "App")
+        new_spotify_id = self.spotify_id_input.text().strip()
+        new_spotify_secret = self.spotify_secret_input.text().strip()
+        new_govee_key = self.govee_key_input.text().strip()
+        new_apple_music_team_id = self.apple_music_team_id_input.text().strip()
+        new_apple_music_key_id = self.apple_music_key_id_input.text().strip()
+        new_apple_music_private_key = self.apple_music_private_key_input.text().strip()
+        new_apple_music_user_token = self.apple_music_user_token_input.text().strip()
+
+        new_govee_devices = []
+        for row in range(self.govee_device_table.rowCount()):
+            if self.govee_device_table.item(row, 0).checkState() == Qt.Checked:
+                new_govee_devices.append({
+                    "device": self.govee_device_table.item(row, 1).text(),
+                    "model": self.govee_device_table.item(row, 2).text(),
+                    "name": self.govee_device_table.item(row, 3).text()
+                })
+
+        new_govee_devices_json = json.dumps(sorted(new_govee_devices, key=lambda x: x['device']))
+        initial_govee_devices_json = json.dumps(sorted(self.initial_govee_devices, key=lambda x: x['device']))
+
+        credentials_changed = (
+            new_spotify_id != self.initial_spotify_id or
+            new_spotify_secret != self.initial_spotify_secret or
+            new_govee_key != self.initial_govee_key or
+            new_apple_music_team_id != self.initial_apple_music_team_id or
+            new_apple_music_key_id != self.initial_apple_music_key_id or
+            new_apple_music_private_key != self.initial_apple_music_private_key or
+            new_apple_music_user_token != self.initial_apple_music_user_token or
+            new_govee_devices_json != initial_govee_devices_json
+        )
+
+        if credentials_changed:
+            msg = ThemedMessageBox(
+                "Restart Required",
+                "Changing credentials requires an application restart. Save all changes and restart now?",
+                [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)],
+                self,
+                self.ui_bg_color,
+                self.ui_text_color,
+                self.ui_accent_color,
+                self.text_border_checkbox.isChecked(),
+                self.text_border_color,
+                self.text_border_size_slider.value(),
+            )
+
+            if msg.exec_() == QDialog.Accepted:
+                settings.setValue("spotify_client_id", new_spotify_id)
+                settings.setValue("spotify_client_secret", new_spotify_secret)
+                settings.setValue("govee_api_key", new_govee_key)
+                settings.setValue("apple_music_team_id", new_apple_music_team_id)
+                settings.setValue("apple_music_key_id", new_apple_music_key_id)
+                settings.setValue("apple_music_private_key", new_apple_music_private_key)
+                settings.setValue("apple_music_user_token", new_apple_music_user_token)
+                settings.setValue("govee_devices", json.dumps(new_govee_devices))
+
+                if os.path.exists(".cache"):
+                    os.remove(".cache")
+                self.parent().restart_app()
+                return
+
+        if close_after:
+            self.accept()
+
+    def _on_auto_save_toggled(self, checked):
+        self._auto_save_enabled = checked
+        settings = QSettings("SpotifySync", "App")
+        settings.setValue("auto_save_enabled", "true" if checked else "false")
+        self._refresh_save_buttons_for_current_tab()
+
+    def _has_saved_theme_for_current_track(self):
+        theme_keys = {
+            "player_bg_color",
+            "ui_palette",
+            "text_color",
+            "blob_palette",
+            "shadow_enabled",
+            "album_art_border_enabled",
+            "title_gradient_enabled",
+            "title_gradient_color",
+            "title_gradient_direction",
+            "font_family",
+            "font_style",
+            "font_size_scale",
+            "text_border_enabled",
+            "text_border_color",
+            "text_border_size",
+            "title_case",
+            "artist_case",
+            "progress_bar_enabled",
+            "lights_config",
+            "govee_brightness",
+        }
+        album_data = self.color_cache.get_album_data(self.album_id) or {}
+        track_data = self.color_cache.get_album_data(self.track_id) or {}
+        if not isinstance(album_data, dict):
+            album_data = {}
+        if not isinstance(track_data, dict):
+            track_data = {}
+        return any(key in album_data for key in theme_keys) or any(key in track_data for key in theme_keys)
+
+    def _build_full_theme_snapshot(self):
+        album_config = {}
+        primary_tone = list(self.ui_bg_color.getRgb()[:3])
+        album_config["player_bg_color"] = list(self.ui_bg_color.getRgb()[:3])
+        album_config["ui_palette"] = [
+            primary_tone,
+            list(self.ui_accent_color.getRgb()[:3]),
+        ]
+        album_config["text_color"] = list(self.ui_text_color.getRgb()[:3])
+        album_config["blob_palette"] = [list(c.getRgb()[:3]) for c in self.blob_colors]
+
+        album_config["shadow_enabled"] = self.shadow_checkbox.isChecked()
+        album_config["album_art_border_enabled"] = self.album_art_border_checkbox.isChecked()
+        album_config["title_gradient_enabled"] = self.title_gradient_checkbox.isChecked()
+        album_config["title_gradient_color"] = list(self.title_gradient_color.getRgb()[:3])
+        album_config["title_gradient_direction"] = self.title_gradient_dir_combo.currentText()
+        album_config["font_family"] = self.font_family_combo.currentText()
+        album_config["font_style"] = self.font_style_combo.currentText()
+        album_config["font_size_scale"] = self.font_size_slider.value()
+
+        album_config["text_border_enabled"] = self.text_border_checkbox.isChecked()
+        album_config["text_border_color"] = list(self.text_border_color.getRgb()[:3])
+        album_config["text_border_size"] = self.text_border_size_slider.value()
+
+        album_config["title_case"] = self._get_selected_case(self.title_case_radios)
+        album_config["artist_case"] = self._get_selected_case(self.artist_case_radios)
+        album_config["progress_bar_enabled"] = self.progress_bar_checkbox.isChecked()
+
+        current_lights_palette = [list(p["color"].getRgb()[:3]) for p in self.govee_color_pickers]
+        album_config["lights_config"] = {
+            "mode": "custom",
+            "palette": current_lights_palette,
+        }
+        album_config["govee_brightness"] = self.govee_brightness_slider.value() / 100.0
+
+        if hasattr(self, 'current_album_name') and self.current_album_name:
+            album_config['meta_album'] = self.current_album_name
+        if hasattr(self, 'current_artist_name') and self.current_artist_name:
+            album_config['meta_artist'] = self.current_artist_name
+
+        return album_config
+
+    def done_auto_save(self):
+        """Save all settings and close (global settings + full current track theme snapshot)."""
+        self._is_closing_via_save = True
+
+        global_changes, theme_changes = self._collect_pending_changes()
+        keys_to_save = [item['key'] for item in (global_changes + theme_changes)]
+        self._persist_selected_changes(
+            keys_to_save,
+            global_changes,
+            theme_changes,
+            quick=False,
+            close_after=False,
+            allow_restart_prompt=False,
+        )
+
+        if self.media_source == 'spotify':
+            album_config = self._build_full_theme_snapshot()
+            self.color_cache.set_album_data(self.album_id, album_config)
+
+            needs_art_reload = self._custom_art_changed or (self._active_custom_art_scope() != self.initial_custom_art_scope)
+            self._persist_custom_art()
+            if needs_art_reload:
+                self.initial_custom_art_scope = self._active_custom_art_scope()
+                self._custom_art_changed = False
+
+            slider_value = self.blob_amount_slider.value()
+            if self.parent():
+                self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
+
+            emit_config = dict(album_config)
+            if needs_art_reload:
+                emit_config["_reload_art"] = True
+            self.config_saved.emit(self.album_id, emit_config)
+            self.populate_theme_browser()
+            self._refresh_saved_theme_baseline()
+
+        self._handle_credential_changes(close_after=True)
+
+    def _ensure_theme_library_dialog(self):
+        if self.theme_library_dialog is not None:
+            self.theme_library_dialog.bg_color = QColor(self.ui_bg_color)
+            self.theme_library_dialog.text_color = QColor(self.ui_text_color)
+            self.theme_library_dialog.accent_color = QColor(self.ui_accent_color)
+            self.theme_library_dialog.border_enabled = self.text_border_checkbox.isChecked()
+            self.theme_library_dialog.border_color = QColor(self.text_border_color)
+            self.theme_library_dialog.border_width = self.text_border_size_slider.value()
+            self.theme_library_dialog.title_label.setBorder(
+                self.theme_library_dialog.border_enabled,
+                self.theme_library_dialog.border_color,
+                self.theme_library_dialog.border_width,
+            )
+            self.theme_library_dialog.title_label.setCustomTextColor(self.theme_library_dialog.text_color)
+            self.theme_library_dialog.apply_theme()
+            return self.theme_library_dialog
+
+        dialog = ThemedDialog(
+            self,
+            "Saved Themes",
+            QColor(self.ui_bg_color),
+            QColor(self.ui_text_color),
+            QColor(self.ui_accent_color),
+            self.text_border_checkbox.isChecked(),
+            QColor(self.text_border_color),
+            self.text_border_size_slider.value(),
+        )
+        dialog.setMinimumSize(760, 520)
+        dialog.resize(860, 620)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        control_layout = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.populate_theme_browser)
+        import_batch_btn = QPushButton("Import Albums")
+        import_batch_btn.setToolTip("Select multiple theme files to add or update.")
+        import_batch_btn.clicked.connect(self.import_batch_themes)
+        control_layout.addWidget(refresh_btn)
+        control_layout.addWidget(import_batch_btn)
+        control_layout.addStretch()
+        layout.addLayout(control_layout)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.theme_library_content = QWidget()
+        self.theme_library_grid = QGridLayout(self.theme_library_content)
+        self.theme_library_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.theme_library_grid.setSpacing(15)
+        scroll_area.setWidget(self.theme_library_content)
+        layout.addWidget(scroll_area)
+
+        dialog.content_layout.addWidget(container)
+        self.theme_library_dialog = dialog
+        return dialog
+
+    def open_theme_library_dialog(self):
+        dialog = self._ensure_theme_library_dialog()
+        self.populate_theme_browser()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _install_filter_recursive(self, widget):
         """Installs the border event filter on the widget and all its children."""
@@ -756,6 +1382,24 @@ class ColorEditorDialog(QDialog):
         for child in widget.children():
             if isinstance(child, QWidget):
                 self._install_filter_recursive(child)
+
+    def eventFilter(self, obj, event):
+        if isinstance(obj, QSlider) and event.type() == QEvent.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        if isinstance(obj, QSlider) and event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            option = QStyleOptionSlider()
+            obj.initStyleOption(option)
+            handle = obj.style().subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, obj)
+            if not handle.contains(event.pos()):
+                if obj.orientation() == Qt.Horizontal:
+                    value = QStyle.sliderValueFromPosition(obj.minimum(), obj.maximum(), event.x(), obj.width())
+                else:
+                    value = QStyle.sliderValueFromPosition(obj.minimum(), obj.maximum(), obj.height() - event.y(), obj.height())
+                obj.setValue(value)
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
 
     def _create_label(self, text):
         lbl = BorderedLabel(text)
@@ -1038,7 +1682,8 @@ class ColorEditorDialog(QDialog):
 
         self.default_text_border_size_slider = QSlider(Qt.Horizontal); self.default_text_border_size_slider.setRange(1, 10); self.default_text_border_size_slider.setValue(self.initial_default_text_border_size)
         self.default_text_border_size_label = self._create_dynamic_label(f"{self.initial_default_text_border_size}px")
-        self.default_text_border_size_slider.valueChanged.connect(lambda v: (self.default_text_border_size_label.setText(f"{v}px"), self.update_previews()))
+        self.default_text_border_size_slider.valueChanged.connect(lambda v: self.default_text_border_size_label.setText(f"{v}px"))
+        self.default_text_border_size_slider.sliderReleased.connect(self.update_previews)
         default_border_size_layout = QHBoxLayout(); default_border_size_layout.addWidget(self.default_text_border_size_slider); default_border_size_layout.addWidget(self.default_text_border_size_label)
         
         default_text_layout.addRow(self._create_label("Outline Size:"), default_border_size_layout)
@@ -1071,6 +1716,25 @@ class ColorEditorDialog(QDialog):
         self.default_progress_bar_checkbox = QCheckBox("Show Progress Bar by Default")
         self.default_progress_bar_checkbox.setChecked(self.initial_default_progress_bar_enabled)
         visual_effects_layout.addRow(self.default_progress_bar_checkbox)
+
+        self.track_transition_duration_slider = QSlider(Qt.Horizontal)
+        self.track_transition_duration_slider.setRange(250, 2200)
+        self.track_transition_duration_slider.setValue(self.initial_track_transition_duration_ms)
+        self.track_transition_duration_slider.setToolTip("Controls how long album art and detail fades take between tracks.")
+        self.track_transition_duration_label = self._create_dynamic_label(f"{self.initial_track_transition_duration_ms / 1000:.2f}s")
+        self.track_transition_duration_slider.valueChanged.connect(
+            lambda v: self.track_transition_duration_label.setText(f"{v / 1000:.2f}s")
+        )
+        transition_duration_layout = QHBoxLayout()
+        transition_duration_layout.addWidget(self.track_transition_duration_slider)
+        transition_duration_layout.addWidget(self.track_transition_duration_label)
+        visual_effects_layout.addRow(self._create_label("Track Transition Speed:"), transition_duration_layout)
+
+        self.track_transition_easing_combo = NoScrollComboBox()
+        self.track_transition_easing_combo.addItems(self.TRACK_TRANSITION_EASING_OPTIONS)
+        self.track_transition_easing_combo.setCurrentText(self.initial_track_transition_easing)
+        self.track_transition_easing_combo.setToolTip("Controls the easing curve used for track fade transitions.")
+        visual_effects_layout.addRow(self._create_label("Track Transition Curve:"), self.track_transition_easing_combo)
 
         # Layout & Window Behavior
         behavior_group = QGroupBox("Window & Layout")
@@ -1142,6 +1806,23 @@ class ColorEditorDialog(QDialog):
         sound_layout.addWidget(self.sound_volume_label)
         sound_layout_form.addRow(self._create_label("Volume:"), sound_layout)
 
+        settings_behavior_group = QGroupBox("Settings")
+        settings_behavior_layout = QVBoxLayout(settings_behavior_group)
+        settings_behavior_layout.setContentsMargins(15, 15, 15, 15)
+        settings_behavior_layout.setSpacing(10)
+        global_layout.addWidget(settings_behavior_group)
+
+        self.auto_save_checkbox = QCheckBox("Auto-save changes immediately")
+        self.auto_save_checkbox.setChecked(self._auto_save_enabled)
+        self.auto_save_checkbox.setToolTip("When enabled, changes are saved as soon as they are edited.")
+        self.auto_save_checkbox.toggled.connect(self._on_auto_save_toggled)
+        settings_behavior_layout.addWidget(self.auto_save_checkbox)
+
+        self.saved_themes_button = QPushButton("Open Saved Themes")
+        self.saved_themes_button.setToolTip("Browse, import, export, and delete saved themes.")
+        self.saved_themes_button.clicked.connect(self.open_theme_library_dialog)
+        settings_behavior_layout.addWidget(self.saved_themes_button)
+
         # Data Management Group
         data_group = QGroupBox("Maintenance")
         data_layout = QVBoxLayout(data_group)
@@ -1159,8 +1840,6 @@ class ColorEditorDialog(QDialog):
         global_layout.addStretch()
 
         yield # Yield after Tab 3 setup
-
-        yield from self._setup_theme_browser_tab()
 
         # --- Tab 4: Connections ---
         credentials_tab = QWidget()
@@ -1405,13 +2084,8 @@ class ColorEditorDialog(QDialog):
             is_text=True
         )
         self.title_gradient_dir_combo = NoScrollComboBox()
-        self.title_gradient_dir_combo.addItems([
-            "Left to Right",
-            "Top to Bottom",
-            "Top-Left to Bottom-Right",
-            "Bottom-Left to Top-Right"
-        ])
-        self.title_gradient_dir_combo.setCurrentText(self.title_gradient_direction)
+        self.title_gradient_dir_combo.addItems(self.GRADIENT_DIRECTION_OPTIONS)
+        self.title_gradient_dir_combo.setCurrentText(self._normalize_gradient_direction_label(self.title_gradient_direction))
         self.title_grad_pick_btn.setEnabled(self.title_gradient_checkbox.isChecked())
         self.title_grad_preview.setEnabled(self.title_gradient_checkbox.isChecked())
         self.title_gradient_dir_combo.setEnabled(self.title_gradient_checkbox.isChecked())
@@ -1453,7 +2127,8 @@ class ColorEditorDialog(QDialog):
         self.font_size_slider = QSlider(Qt.Horizontal); self.font_size_slider.setRange(50, 200); self.font_size_slider.setValue(self.initial_font_size_scale)
         self.font_size_slider.setEnabled(self.is_font_size_overridden)
         self.font_size_label = self._create_dynamic_label(f"{self.initial_font_size_scale}%")
-        self.font_size_slider.valueChanged.connect(lambda v: (self.font_size_label.setText(f"{v}%"), self.update_previews()))
+        self.font_size_slider.valueChanged.connect(lambda v: self.font_size_label.setText(f"{v}%"))
+        self.font_size_slider.sliderReleased.connect(self.update_previews)
         size_layout = QHBoxLayout(); size_layout.addWidget(self.font_size_slider); size_layout.addWidget(self.font_size_label)
 
         self.shadow_checkbox = QCheckBox("Enable Text Shadow")
@@ -1490,7 +2165,8 @@ class ColorEditorDialog(QDialog):
         self.text_border_size_slider = QSlider(Qt.Horizontal); self.text_border_size_slider.setRange(1, 10); self.text_border_size_slider.setValue(self.initial_text_border_size)
         self.text_border_size_slider.setEnabled(self.is_border_size_overridden)
         self.text_border_size_label = self._create_dynamic_label(f"{self.initial_text_border_size}px")
-        self.text_border_size_slider.valueChanged.connect(lambda v: (self.text_border_size_label.setText(f"{v}px"), self.update_previews()))
+        self.text_border_size_slider.valueChanged.connect(lambda v: self.text_border_size_label.setText(f"{v}px"))
+        self.text_border_size_slider.sliderReleased.connect(self.update_previews)
         border_size_layout = QHBoxLayout(); border_size_layout.addWidget(self.text_border_size_slider); border_size_layout.addWidget(self.text_border_size_label)
 
         text_layout.addRow(self.override_font_checkbox)
@@ -1699,9 +2375,10 @@ class ColorEditorDialog(QDialog):
         self.sizegrip = QSizeGrip(self)
 
         # --- Action Buttons ---
-        action_layout = QHBoxLayout() # Note: self.main_layout is the top-level HBox, we need to add this to the dialog's VBox
-        action_layout.setSpacing(10)
-        action_layout.addStretch() 
+        self.action_layout = QHBoxLayout()
+        self.action_layout.setContentsMargins(20, 5, 20, 15)
+        self.action_layout.setSpacing(10)
+        self.action_layout.addStretch()
         
         self.quick_save_btn = QPushButton("Quick Save")
         self.quick_save_btn.setToolTip("Save changed settings immediately.")
@@ -1716,13 +2393,18 @@ class ColorEditorDialog(QDialog):
         self.save_button.setDefault(True)
         self.save_button.setToolTip("Choose which settings to save.")
         self.save_button.clicked.connect(lambda: self.save_and_close(quick=False))
+
+        self.done_button = QPushButton("Done")
+        self.done_button.setToolTip("Save all settings and close.")
+        self.done_button.clicked.connect(self.done_auto_save)
         
         self.cancel_button = QPushButton("Cancel")
-        action_layout.addWidget(self.quick_save_btn)
-        action_layout.addWidget(self.save_full_theme_btn) # Added here
-        action_layout.addWidget(self.save_button)
-        action_layout.addWidget(self.cancel_button)
-        self.layout().addLayout(action_layout)
+        self.action_layout.addWidget(self.quick_save_btn)
+        self.action_layout.addWidget(self.save_full_theme_btn) # Added here
+        self.action_layout.addWidget(self.save_button)
+        self.action_layout.addWidget(self.done_button)
+        self.action_layout.addWidget(self.cancel_button)
+        self.layout().addLayout(self.action_layout)
 
         # --- 3. CONNECT SIGNALS ---
         self.font_search_input.textChanged.connect(self._filter_font_list)
@@ -1750,6 +2432,7 @@ class ColorEditorDialog(QDialog):
         self.loading_container.hide()
         self.settings_container.setVisible(True)
         self._is_ui_built = True
+        self._refresh_save_buttons_for_current_tab()
         
         # Install event filter on all created widgets
         self._install_filter_recursive(self)
@@ -1794,15 +2477,9 @@ class ColorEditorDialog(QDialog):
         # Default height start
         max_h = 600
         
-        # Iterate tabs to find max content size, BUT skip the 'Theme Library' grid 
-        # because it can get infinitely long. We want that one to scroll.
+        # Iterate tabs to find max content size.
         for i in range(self.tab_widget.count()):
             page = self.tab_widget.widget(i)
-            label = self.tab_widget.tabText(i)
-            
-            # Skip calculating height based on the Theme Library tab
-            if label == "Theme Library":
-                continue
 
             scroll_area = page.findChild(QScrollArea)
             if scroll_area:
@@ -1832,17 +2509,9 @@ class ColorEditorDialog(QDialog):
         self.setMinimumSize(800, 500)
 
     def _on_default_font_size_changed(self, value):
-        """Updates label and applies global size to preview if override is OFF."""
+        """Updates default size label and preview without mutating theme-specific size."""
         self.default_font_size_label.setText(f"{value}%")
-        
-        # Fix: If user hasn't checked 'Override Default Size', changing the global default
-        # should immediately update the 'Current Theme' slider and preview.
-        if not self.override_size_checkbox.isChecked():
-            self.font_size_slider.blockSignals(True) # Prevent double update
-            self.font_size_slider.setValue(value)
-            self.font_size_slider.blockSignals(False)
-            self.font_size_label.setText(f"{value}%")
-            self.update_previews()
+        self.update_previews()
 
     def _on_sound_volume_changed(self, value):
         self.sound_volume_label.setText(f"{value}%")
@@ -2158,6 +2827,7 @@ class ColorEditorDialog(QDialog):
             """
         self.setStyleSheet(sheet)
         self._update_blob_buttons_style()
+        self._update_settings_titlebar_style()
         
         # 2. Update Custom Tab Bar Colors
         if hasattr(self, 'custom_tab_bar'):
@@ -2196,6 +2866,21 @@ class ColorEditorDialog(QDialog):
                 }}
             """
             self.govee_device_table.setStyleSheet(table_style)
+
+    def _update_settings_titlebar_style(self):
+        """Updates the settings dialog title bar colors to match the current theme."""
+        ar, ag, ab = self.ui_accent_color.red(), self.ui_accent_color.green(), self.ui_accent_color.blue()
+        tc = self.ui_text_color.name()
+        if hasattr(self, '_settings_title_sep'):
+            self._settings_title_sep.setStyleSheet(f"background: rgba({ar}, {ag}, {ab}, 55);")
+        if hasattr(self, '_settings_title_label'):
+            self._settings_title_label.setStyleSheet(f"color: {tc}; font-weight: 600; font-size: 13px;")
+        if hasattr(self, '_settings_close_btn'):
+            self._settings_close_btn.setStyleSheet(
+                f"QPushButton {{ border: none; background: transparent; font-size: 20px; color: {tc}; border-radius: 16px; font-weight: 300; }}"
+                f" QPushButton:hover {{ color: #ffffff; background: #e0454a; border: none; }}"
+                f" QPushButton:pressed {{ background: #c03030; color: #ffffff; }}"
+            )
 
     def _update_blob_buttons_style(self):
         # Use the regular button theme for consistency with other buttons in settings
@@ -2357,6 +3042,7 @@ class ColorEditorDialog(QDialog):
                 self.shortcut_status_label.setText(f"Assigned {normalized}. Removed from {prev_label} to keep keys unique.")
             else:
                 self.shortcut_status_label.setText(f"Assigned {normalized}.")
+        self._schedule_auto_save()
 
     def _reset_shortcuts_to_defaults(self):
         defaults = {
@@ -2368,6 +3054,7 @@ class ColorEditorDialog(QDialog):
         self._refresh_shortcut_rows()
         if self.shortcut_status_label:
             self.shortcut_status_label.setText("Shortcut bindings reset to defaults.")
+        self._schedule_auto_save()
 
     def _clear_shortcut_binding(self, action_id):
         if action_id not in getattr(self, "shortcut_bindings", {}):
@@ -2382,6 +3069,7 @@ class ColorEditorDialog(QDialog):
         if self.shortcut_status_label:
             label = next((d.get("label", action_id) for d in self.shortcut_definitions if d.get("id") == action_id), action_id)
             self.shortcut_status_label.setText(f"Cleared {label} shortcut.")
+        self._schedule_auto_save()
 
     def keyPressEvent(self, event):
         capture_action = getattr(self, "_shortcut_capture_action_id", None)
@@ -2422,17 +3110,34 @@ class ColorEditorDialog(QDialog):
             return
         try:
             painter.setRenderHint(QPainter.Antialiasing)
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(self.rect()), 12, 12)
-            
+            outer_path = QPainterPath()
+            outer_path.addRoundedRect(QRectF(self.rect()), 14, 14)
+
             preview_bg = QColor(self.ui_bg_color)
-            preview_bg.setAlpha(240) 
-            painter.fillPath(path, preview_bg)
+            preview_bg.setAlpha(240)
+
+            painter.setClipPath(outer_path)
+            painter.fillRect(self.rect(), preview_bg)
+
+            title_h = getattr(self, '_SETTINGS_TITLE_BAR_HEIGHT', 50)
+            header_color = QColor(self.ui_bg_color)
+            if header_color.lightnessF() > 0.5:
+                header_color = header_color.darker(108)
+            else:
+                header_color = header_color.lighter(112)
+            header_color.setAlpha(240)
+            painter.fillRect(0, 0, self.width(), title_h, header_color)
+
+            painter.setClipping(False)
+            ar, ag, ab = self.ui_accent_color.red(), self.ui_accent_color.green(), self.ui_accent_color.blue()
+            border_color = QColor(ar, ag, ab, 120)
+            painter.setPen(QPen(border_color, 1))
+            painter.drawPath(outer_path)
         finally:
             painter.end()
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and event.y() < 220: 
+        if event.button() == Qt.LeftButton and event.y() < 58:
             self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
             event.accept()
 
@@ -2446,6 +3151,10 @@ class ColorEditorDialog(QDialog):
 
     def closeEvent(self, event):
         self._cancel_shortcut_capture(clear_status=False)
+        if self._auto_save_timer.isActive():
+            self._auto_save_timer.stop()
+        if self.theme_library_dialog is not None:
+            self.theme_library_dialog.close()
         super().closeEvent(event)
 
     def create_color_row(self, preview_widget, pick_button, reset_button=None):
@@ -2522,9 +3231,6 @@ class ColorEditorDialog(QDialog):
 
     def _on_override_size_toggled(self, checked):
         self.font_size_slider.setEnabled(checked)
-        if not checked:
-            # Reset to default for preview if unchecked
-            self.font_size_slider.setValue(self.parent().default_font_size_scale)
         self.update_previews()
 
 
@@ -2536,9 +3242,6 @@ class ColorEditorDialog(QDialog):
 
     def _on_override_border_size_toggled(self, checked):
         self.text_border_size_slider.setEnabled(checked)
-        if not checked:
-            # Reset to default for preview if unchecked
-            self.text_border_size_slider.setValue(self.initial_default_text_border_size)
         self.update_previews()
 
     def _on_auto_text_toggled(self, checked, recalculate=True):
@@ -2634,7 +3337,8 @@ class ColorEditorDialog(QDialog):
         self.setPalette(palette)
         self.render_updates()
         self.update_stylesheet()
-        self.update() 
+        self.update()
+        self._schedule_auto_save()
 
     def pick_ui_bg_color(self):
         new_color = self._get_themed_color(self.ui_bg_color, "Select Player Background")
@@ -2699,6 +3403,7 @@ class ColorEditorDialog(QDialog):
         if new_color.isValid():
             self.title_gradient_color = new_color
             self.title_grad_preview.setStyleSheet(f"background-color: {new_color.name()}; color: transparent; border-radius: 5px; border: 1px solid #555;")
+            self._schedule_auto_save()
 
     def _on_text_border_toggled(self, checked):
         # If the user manually toggles, we leave auto mode
@@ -2825,6 +3530,7 @@ class ColorEditorDialog(QDialog):
                     new_pixmap = QPixmap(file_path)
                     self.current_art_pixmap = new_pixmap
                     self._custom_art_changed = True
+                    self._schedule_auto_save()
                 except Exception as e:
                     print(f"Error loading custom art: {e}")
                     self.custom_art_b64 = None
@@ -2834,6 +3540,7 @@ class ColorEditorDialog(QDialog):
         self._custom_art_changed = True
         original_pixmap = self.parent().art.pixmap()
         self.current_art_pixmap = original_pixmap
+        self._schedule_auto_save()
 
     def _active_custom_art_scope(self):
         return "album" if hasattr(self, "custom_art_album_radio") and self.custom_art_album_radio.isChecked() else "track"
@@ -2977,52 +3684,17 @@ class ColorEditorDialog(QDialog):
         self.update_previews()
         self.update_stylesheet()
 
-    def _setup_theme_browser_tab(self):
-        browser_tab = QWidget()
-        browser_layout = QVBoxLayout(browser_tab)
-        browser_layout.setContentsMargins(0, 0, 5, 0)
-
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
-        self.browser_content = QWidget()
-        
-        from PyQt5.QtWidgets import QGridLayout
-        self.browser_grid = QGridLayout(self.browser_content)
-        self.browser_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.browser_grid.setSpacing(15)
-        
-        scroll_area.setWidget(self.browser_content)
-        browser_layout.addWidget(scroll_area)
-        
-        # --- Control Bar ---
-        control_layout = QHBoxLayout()
-        
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self.populate_theme_browser)
-        
-        # New Batch Import Button
-        import_batch_btn = QPushButton("Import Albums")
-        import_batch_btn.setToolTip("Select multiple theme files to add or update.")
-        import_batch_btn.clicked.connect(self.import_batch_themes)
-        
-        control_layout.addWidget(refresh_btn)
-        control_layout.addWidget(import_batch_btn)
-        control_layout.addStretch() # Push buttons to left
-        
-        browser_layout.addLayout(control_layout)
-
-        self.tab_widget.addTab(browser_tab, "Theme Library")
-        
-        self.populate_theme_browser()
-        
-        yield
+    def _get_theme_browser_grid(self):
+        return self.theme_library_grid
 
     def populate_theme_browser(self):
+        browser_grid = self._get_theme_browser_grid()
+        if browser_grid is None:
+            return
+
         # Clear existing layout
-        while self.browser_grid.count():
-            item = self.browser_grid.takeAt(0)
+        while browser_grid.count():
+            item = browser_grid.takeAt(0)
             if item.widget(): item.widget().deleteLater()
 
         # Get cache
@@ -3047,7 +3719,7 @@ class ColorEditorDialog(QDialog):
             # has visited these and we want to show visual settings.
             
             card = self.create_theme_card(album_id, data)
-            self.browser_grid.addWidget(card, row, col)
+            browser_grid.addWidget(card, row, col)
             
             found_any = True
             col += 1
@@ -3058,7 +3730,7 @@ class ColorEditorDialog(QDialog):
         if not found_any:
             lbl = QLabel("No themes saved yet.")
             lbl.setStyleSheet(f"color: {self.ui_text_color.name()}; font-style: italic;")
-            self.browser_grid.addWidget(lbl, 0, 0)
+            browser_grid.addWidget(lbl, 0, 0)
 
     def create_theme_card(self, album_id, data):
         card = QFrame()
@@ -3308,6 +3980,7 @@ class ColorEditorDialog(QDialog):
         self.populate_theme_browser()
 
     def load_track_state(self, album_id, track_id, album_art_pixmap, animate=True, album_name="", artist_name=""):
+        self._auto_save_suspended = True
         self._loading_state = True
         
         # Block signals
@@ -3340,9 +4013,7 @@ class ColorEditorDialog(QDialog):
                 self.cached_data['meta_album'] = self.current_album_name
                 self.cached_data['meta_artist'] = self.current_artist_name
                 self.color_cache.set_album_data(self.album_id, self.cached_data)
-                # Refresh browser if it's already built
-                if hasattr(self, 'browser_grid'):
-                    self.populate_theme_browser()
+                self.populate_theme_browser()
             
             main_window_state = self.parent()
             
@@ -3409,7 +4080,9 @@ class ColorEditorDialog(QDialog):
             self.title_grad_preview.setStyleSheet(
                 f"background-color: {self.title_gradient_color.name()}; color: transparent; border-radius: 5px; border: 1px solid #555;"
             )
-            self.title_gradient_dir_combo.setCurrentText(str(self.cached_data.get("title_gradient_direction", "Left to Right")))
+            self.title_gradient_dir_combo.setCurrentText(
+                self._normalize_gradient_direction_label(self.cached_data.get("title_gradient_direction", "Left to Right"))
+            )
             self.initial_title_gradient_enabled = self.title_gradient_checkbox.isChecked()
             self.initial_title_gradient_color = QColor(self.title_gradient_color)
             self.initial_title_gradient_direction = self.title_gradient_dir_combo.currentText()
@@ -3554,6 +4227,7 @@ class ColorEditorDialog(QDialog):
                 # Update loading screen appearance to match new theme
                 self.loading_label.setStyleSheet(f"color: {self.ui_text_color.name()}; font-size: 18px; font-weight: bold;")
                 self.setStyleSheet(get_common_stylesheet(self.ui_bg_color, self.ui_text_color, self.ui_accent_color))
+                self._auto_save_suspended = False
                 if animate: self.animate_entry()
                 elif not self.isVisible(): self.show(); self.raise_(); self.activateWindow()
                 return
@@ -3573,6 +4247,8 @@ class ColorEditorDialog(QDialog):
 
         self.update_previews()
         self.update_stylesheet()
+        self._refresh_save_buttons_for_current_tab()
+        self._auto_save_suspended = False
         
         if animate:
             self.animate_entry()
@@ -3625,6 +4301,9 @@ class ColorEditorDialog(QDialog):
         check("default_progress_bar_enabled", "App Default: Show Progress Bar", self.default_progress_bar_checkbox.isChecked(), False, bool)
         check("default_text_border_enabled", "App Default: Show Text Outline", self.default_text_border_checkbox.isChecked(), False, bool)
         check("default_text_border_size", "App Default: Text Outline Size", self.default_text_border_size_slider.value(), 3, int)
+        check("track_transition_duration_ms", "Player: Track Transition Speed", self.track_transition_duration_slider.value(), 800, int)
+        check("track_transition_easing", "Player: Track Transition Curve", self.track_transition_easing_combo.currentText(), "Out Cubic")
+        check("auto_save_enabled", "Settings: Auto Save", self.auto_save_checkbox.isChecked(), False, bool)
 
         # Notifications
         check("notification_enabled", "Notifications: Enabled", self.notification_enabled_checkbox.isChecked(), False, bool)
@@ -3788,60 +4467,7 @@ class ColorEditorDialog(QDialog):
     def save_full_theme(self):
         """Snapshots the exact current state of the panel and saves it as the theme."""
         self._is_closing_via_save = True
-        
-        # Build configuration from CURRENT UI state (ignoring "auto" flags)
-        album_config = {}
-
-        # 1. Colors & Palette
-        primary_tone = list(self.ui_bg_color.getRgb()[:3])
-        album_config["player_bg_color"] = list(self.ui_bg_color.getRgb()[:3])
-        album_config["ui_palette"] = [
-            primary_tone,
-            list(self.ui_accent_color.getRgb()[:3])
-        ]
-        album_config["text_color"] = list(self.ui_text_color.getRgb()[:3])
-        album_config["blob_palette"] = [list(c.getRgb()[:3]) for c in self.blob_colors]
-
-        # 2. Typography
-        album_config["shadow_enabled"] = self.shadow_checkbox.isChecked()
-        album_config["album_art_border_enabled"] = self.album_art_border_checkbox.isChecked()
-        album_config["title_gradient_enabled"] = self.title_gradient_checkbox.isChecked()
-        album_config["title_gradient_color"] = list(self.title_gradient_color.getRgb()[:3])
-        album_config["title_gradient_direction"] = self.title_gradient_dir_combo.currentText()
-        
-        # We save the text currently displayed in the combo boxes. 
-        # On the next load, the loader will see these values and automatically 
-        # check "Override" because a specific value is saved.
-        album_config["font_family"] = self.font_family_combo.currentText()
-        album_config["font_style"] = self.font_style_combo.currentText()
-        album_config["font_size_scale"] = self.font_size_slider.value()
-
-        # 3. Text Border
-        album_config["text_border_enabled"] = self.text_border_checkbox.isChecked()
-        album_config["text_border_color"] = list(self.text_border_color.getRgb()[:3])
-        album_config["text_border_size"] = self.text_border_size_slider.value()
-        
-        # 4. Casing
-        album_config["title_case"] = self._get_selected_case(self.title_case_radios)
-        album_config["artist_case"] = self._get_selected_case(self.artist_case_radios)
-
-        # 5. Interface
-        album_config["progress_bar_enabled"] = self.progress_bar_checkbox.isChecked()
-
-        # 6. Lights
-        current_lights_palette = [list(p["color"].getRgb()[:3]) for p in self.govee_color_pickers]
-        album_config["lights_config"] = {
-            "mode": "custom",
-            "palette": current_lights_palette
-        }
-        # Save brightness value (converting from slider 0-100 to float 0.0-1.0)
-        album_config["govee_brightness"] = self.govee_brightness_slider.value() / 100.0
-
-        # 7. Metadata (Crucial for the browser tab)
-        if hasattr(self, 'current_album_name') and self.current_album_name:
-            album_config['meta_album'] = self.current_album_name
-        if hasattr(self, 'current_artist_name') and self.current_artist_name:
-            album_config['meta_artist'] = self.current_artist_name
+        album_config = self._build_full_theme_snapshot()
 
         # 8. Save to Cache
         self.color_cache.set_album_data(self.album_id, album_config)
@@ -3862,24 +4488,16 @@ class ColorEditorDialog(QDialog):
             self.initial_custom_art_scope = self._active_custom_art_scope()
             self._custom_art_changed = False
         self.config_saved.emit(self.album_id, emit_config)
-        
-        if hasattr(self, 'browser_grid'):
-            self.populate_theme_browser()
+        self.populate_theme_browser()
             
         # Close the dialog to indicate success
         self.accept()
 
     def save_and_close(self, quick=False):
         self._is_closing_via_save = True
-        # 1. Collect all changes from UI controls
-        global_changes = self._get_global_changes()        
-        theme_changes = []
-        if self.media_source == 'spotify':
-            theme_changes = self._collect_theme_changes()
-        
+        global_changes, theme_changes = self._collect_pending_changes()
         all_changes = global_changes + theme_changes
-        
-        # 2. Determine keys to save
+
         keys_to_save = []
         if quick:
             keys_to_save = [item['key'] for item in all_changes if item['changed']]
@@ -3891,125 +4509,9 @@ class ColorEditorDialog(QDialog):
             if dialog.exec_() == QDialog.Accepted:
                 keys_to_save = dialog.selected_keys
             else:
-                return 
+                return
 
-        # 3. Save Global Settings
-        settings = QSettings("SpotifySync", "App")
-        for item in global_changes:
-            if item['key'] in keys_to_save:
-                val = item['value']
-                if item['key'] == "keyboard_shortcuts":
-                    settings.setValue(item['key'], json.dumps(self._normalize_shortcut_bindings(val)))
-                elif isinstance(val, bool):
-                    settings.setValue(item['key'], "true" if val else "false")
-                else:
-                    settings.setValue(item['key'], val)
-
-        if "keyboard_shortcuts" in keys_to_save and self.parent() and hasattr(self.parent(), 'apply_shortcut_bindings'):
-            self.parent().apply_shortcut_bindings(self.shortcut_bindings, persist=False)
-
-        # 4. Save Theme Settings
-        needs_art_reload = False
-        did_persist_custom_art = False
-        if self.media_source == 'spotify':
-            album_config = self.cached_data.copy()
-            theme_keys_processed = False
-            needs_art_reload = self._custom_art_changed or (self._active_custom_art_scope() != self.initial_custom_art_scope)
-            should_persist_custom_art = needs_art_reload and (quick or "custom_art_scope" in keys_to_save)
-            
-            for item in theme_changes:
-                if item['key'] in keys_to_save:
-                    if item['key'] == "custom_art_scope":
-                        continue
-                    theme_keys_processed = True
-                    if item['value'] == "__REMOVE__":
-                        album_config.pop(item['key'], None)
-                    else:
-                        album_config[item['key']] = item['value']
-            
-            if theme_keys_processed:
-                # --- NEW: Save Metadata ---
-                # Ensure we save the readable names so the browser works well
-                if hasattr(self, 'current_album_name') and self.current_album_name:
-                    album_config['meta_album'] = self.current_album_name
-                if hasattr(self, 'current_artist_name') and self.current_artist_name:
-                    album_config['meta_artist'] = self.current_artist_name
-                    
-                self.color_cache.set_album_data(self.album_id, album_config)
-                
-                slider_value = self.blob_amount_slider.value()
-                if self.parent():
-                    self.parent().blob_density = 400000 / slider_value if slider_value > 0 else 200000
-
-            if should_persist_custom_art:
-                self._persist_custom_art()
-                self.initial_custom_art_scope = self._active_custom_art_scope()
-                self._custom_art_changed = False
-                did_persist_custom_art = True
-
-        # 5. Notify Main Window
-        if keys_to_save or quick:
-            emit_config = self.color_cache.get_album_data(self.album_id) or {}
-            if self.media_source == 'spotify' and did_persist_custom_art:
-                emit_config = dict(emit_config)
-                emit_config["_reload_art"] = True
-            self.config_saved.emit(self.album_id, emit_config)
-            # Refresh browser tab if open to show new metadata
-            if hasattr(self, 'browser_grid'):
-                self.populate_theme_browser()
-
-        # 6. Check for Credential Changes (Requires Restart)
-        new_spotify_id = self.spotify_id_input.text().strip()
-        new_spotify_secret = self.spotify_secret_input.text().strip()
-        new_govee_key = self.govee_key_input.text().strip()
-        new_apple_music_team_id = self.apple_music_team_id_input.text().strip()
-        new_apple_music_key_id = self.apple_music_key_id_input.text().strip()
-        new_apple_music_private_key = self.apple_music_private_key_input.text().strip()
-        new_apple_music_user_token = self.apple_music_user_token_input.text().strip()
-
-        new_govee_devices = []
-        for row in range(self.govee_device_table.rowCount()):
-            if self.govee_device_table.item(row, 0).checkState() == Qt.Checked:
-                new_govee_devices.append({
-                    "device": self.govee_device_table.item(row, 1).text(), 
-                    "model": self.govee_device_table.item(row, 2).text(), 
-                    "name": self.govee_device_table.item(row, 3).text()
-                })
-        
-        new_govee_devices_json = json.dumps(sorted(new_govee_devices, key=lambda x: x['device']))
-        initial_govee_devices_json = json.dumps(sorted(self.initial_govee_devices, key=lambda x: x['device']))
-
-        credentials_changed = (new_spotify_id != self.initial_spotify_id or 
-                               new_spotify_secret != self.initial_spotify_secret or 
-                               new_govee_key != self.initial_govee_key or 
-                               new_apple_music_team_id != self.initial_apple_music_team_id or
-                               new_apple_music_key_id != self.initial_apple_music_key_id or
-                               new_apple_music_private_key != self.initial_apple_music_private_key or
-                               new_apple_music_user_token != self.initial_apple_music_user_token or
-                               new_govee_devices_json != initial_govee_devices_json)
-
-        if credentials_changed:
-            msg = ThemedMessageBox("Restart Required", "Changing credentials requires an application restart. Save all changes and restart now?", 
-                                   [("Yes", QDialog.Accepted), ("No", QDialog.Rejected)], self, self.ui_bg_color, self.ui_text_color, self.ui_accent_color, self.text_border_checkbox.isChecked(), self.text_border_color, self.text_border_size_slider.value())
-            
-            if msg.exec_() == QDialog.Accepted:
-                settings.setValue("spotify_client_id", new_spotify_id.strip())
-                settings.setValue("spotify_client_secret", new_spotify_secret.strip())
-                settings.setValue("govee_api_key", new_govee_key.strip())
-                settings.setValue("apple_music_team_id", new_apple_music_team_id)
-                settings.setValue("apple_music_key_id", new_apple_music_key_id)
-                settings.setValue("apple_music_private_key", new_apple_music_private_key)
-                settings.setValue("apple_music_user_token", new_apple_music_user_token)
-                settings.setValue("govee_devices", json.dumps(new_govee_devices))
-                
-                if os.path.exists(".cache"): os.remove(".cache")
-                self.parent().restart_app()
-            else:
-                # User chose not to restart, but we still close the dialog as requested
-                self.accept()
-        else:
-            # No credential changes, just close        
-            self.accept()
+        self._persist_selected_changes(keys_to_save, global_changes, theme_changes, quick=quick, close_after=True, allow_restart_prompt=True)
 
     def find_govee_devices(self):
         api_key = self.govee_key_input.text().strip()

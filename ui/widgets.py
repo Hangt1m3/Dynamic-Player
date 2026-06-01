@@ -8,6 +8,66 @@ from PyQt5.QtWidgets import (QLabel, QProgressBar, QGraphicsOpacityEffect, QSize
                              QPushButton, QComboBox, QGroupBox, QCheckBox, QRadioButton, QAbstractButton)
 from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase, QLinearGradient)
 from PyQt5.QtWidgets import QStyledItemDelegate
+
+
+def _gradient_direction_to_angle(direction):
+    if isinstance(direction, (int, float)):
+        return float(direction) % 360.0
+
+    text = str(direction or "").strip().lower()
+    if not text:
+        return 0.0
+
+    if "°" in text:
+        try:
+            return float(text.split("°", 1)[0]) % 360.0
+        except (ValueError, TypeError):
+            pass
+
+    legacy_map = {
+        "left to right": 0.0,
+        "bottom-left to top-right": 45.0,
+        "bottom to top": 90.0,
+        "bottom-right to top-left": 135.0,
+        "right to left": 180.0,
+        "top-right to bottom-left": 225.0,
+        "top to bottom": 270.0,
+        "top-left to bottom-right": 315.0,
+    }
+    return legacy_map.get(text, 0.0)
+
+
+def _build_linear_gradient(bounds, angle_deg, start_color, end_color):
+    angle_rad = math.radians(angle_deg)
+    half_span = max(math.hypot(bounds.width(), bounds.height()) * 0.5, 1.0)
+    dx = math.cos(angle_rad) * half_span
+    dy = -math.sin(angle_rad) * half_span
+    cx = bounds.center().x()
+    cy = bounds.center().y()
+    gradient = QLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
+    gradient.setColorAt(0.0, start_color)
+    gradient.setColorAt(1.0, end_color)
+    return gradient
+
+
+def _ensure_distinct_gradient_end(start_color, end_color):
+    diff = (
+        abs(start_color.red() - end_color.red())
+        + abs(start_color.green() - end_color.green())
+        + abs(start_color.blue() - end_color.blue())
+    )
+    if diff >= 24:
+        return end_color
+
+    fallback = QColor(start_color)
+    if fallback.lightness() < 128:
+        fallback = fallback.lighter(170)
+    else:
+        fallback = fallback.darker(170)
+    fallback.setAlpha(start_color.alpha())
+    return fallback
+
+
 class BlobManager:
     """Manages the positions and properties of all blobs to prevent overlap."""
     def __init__(self, parent, parent_size, palette=None):
@@ -250,6 +310,7 @@ class ResponsiveAlbumArtLabel(QLabel):
     def setAspectRatio(self, ratio):
         if self._aspect_ratio != ratio: self._aspect_ratio = ratio; self._cached_scaled_pixmap = None; self.update()
     def setBorderColor(self, color): self._border_color = color; self.update()
+    def borderWidth(self): return int(self._border_width)
     def setOpacity(self, opacity): self._opacity = opacity; self.update()
     @pyqtProperty(float)
     def scale(self): return self._scale
@@ -362,17 +423,9 @@ class ScrollingTextLabel(QLabel):
             return QBrush(self._text_color)
         secondary = QColor(self._gradient_color)
         secondary.setAlpha(self._text_color.alpha())
-        direction = (self._gradient_direction or "Left to Right").lower()
-        if direction == "top to bottom":
-            gradient = QLinearGradient(text_bounds.center().x(), text_bounds.top(), text_bounds.center().x(), text_bounds.bottom())
-        elif direction == "bottom-left to top-right":
-            gradient = QLinearGradient(text_bounds.bottomLeft(), text_bounds.topRight())
-        elif direction == "top-left to bottom-right":
-            gradient = QLinearGradient(text_bounds.topLeft(), text_bounds.bottomRight())
-        else:
-            gradient = QLinearGradient(text_bounds.left(), text_bounds.center().y(), text_bounds.right(), text_bounds.center().y())
-        gradient.setColorAt(0.0, self._text_color)
-        gradient.setColorAt(1.0, secondary)
+        secondary = _ensure_distinct_gradient_end(self._text_color, secondary)
+        angle = _gradient_direction_to_angle(self._gradient_direction)
+        gradient = _build_linear_gradient(text_bounds, angle, self._text_color, secondary)
         return QBrush(gradient)
     def _draw_text_item(self, painter, x, y, text):
         path = QPainterPath(); path.addText(x, y, self.font(), text)
@@ -712,6 +765,9 @@ class LyricsLabel(QLabel):
         self._full_text = ""
         self._pending_text = None
         self._max_lines = 2
+        self._gradient_enabled = False
+        self._gradient_color = QColor(255, 255, 255, 255)
+        self._gradient_direction = "0° East (Left -> Right)"
 
         self.setAlignment(Qt.AlignCenter)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -743,9 +799,22 @@ class LyricsLabel(QLabel):
             self._border_width = width
         self.update()
 
-    # Gradient stub — accepted but unused (keeps the style propagation loop clean)
     def setGradient(self, enabled=False, secondary_color=None, direction=None):
-        pass
+        self._gradient_enabled = bool(enabled)
+        if secondary_color is not None:
+            self._gradient_color = QColor(secondary_color)
+        if direction is not None:
+            self._gradient_direction = direction
+        self.update()
+
+    def _get_gradient_brush(self, text_bounds, text_color):
+        if not self._gradient_enabled:
+            return QBrush(text_color)
+        secondary = QColor(self._gradient_color)
+        secondary.setAlpha(text_color.alpha())
+        secondary = _ensure_distinct_gradient_end(text_color, secondary)
+        angle = _gradient_direction_to_angle(self._gradient_direction)
+        return QBrush(_build_linear_gradient(text_bounds, angle, text_color, secondary))
 
     def reset(self):
         """Synchronously stop all animations and clear state.
@@ -927,6 +996,7 @@ class LyricsLabel(QLabel):
                 x = (rect.width() - self._text_width(metrics, line)) / 2
                 path = QPainterPath()
                 path.addText(x, y, self.font(), line)
+                path_rect = path.boundingRect()
 
                 if self._border_enabled:
                     pen = QPen(border_color)
@@ -937,7 +1007,8 @@ class LyricsLabel(QLabel):
                     painter.drawPath(path)
 
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(text_color)
+                gradient_bounds = QRectF(0.0, path_rect.top(), float(rect.width()), path_rect.height())
+                painter.setBrush(self._get_gradient_brush(gradient_bounds, text_color))
                 painter.drawPath(path)
                 y += line_height + line_gap
         finally:

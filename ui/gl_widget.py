@@ -306,7 +306,9 @@ class LavaLampGLWidget(QOpenGLWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setUpdateBehavior(QOpenGLWidget.NoPartialUpdate)
         fmt = self.format()
-        fmt.setSwapInterval(1)
+        # Capture apps can stall on vsync-bound swaps for transparent OpenGL widgets.
+        # Keep OpenGL enabled, but make present non-blocking for stable screen sharing.
+        fmt.setSwapInterval(0)
         self.setFormat(fmt)
         self._program = None
         self._vertex_buffer = None
@@ -320,6 +322,8 @@ class LavaLampGLWidget(QOpenGLWidget):
         self._paused_time = 0.0
         self._frame_interval_ms = 28
         self._last_update_ms = -1
+        self._last_forced_repaint_ms = -1
+        self._forced_repaint_interval_ms = 240
         self._palette = [QColor(29, 185, 84), QColor(15, 120, 50), QColor(60, 210, 130)]
         self._palette_from = [QColor(c) for c in self._palette]
         self._palette_to = [QColor(c) for c in self._palette]
@@ -421,6 +425,10 @@ class LavaLampGLWidget(QOpenGLWidget):
         if self._last_update_ms >= 0 and (now_ms - self._last_update_ms) < self._frame_interval_ms:
             return
         self._last_update_ms = now_ms
+        if self._last_forced_repaint_ms < 0 or (now_ms - self._last_forced_repaint_ms) >= self._forced_repaint_interval_ms:
+            self._last_forced_repaint_ms = now_ms
+            self.repaint()
+            return
         self.update()
 
     def _current_time(self):

@@ -86,7 +86,9 @@ class TrackLoaderWorker(QRunnable):
                 "lights_config",
                 "text_color",
                 "text_border_color",
+                "title_gradient_enabled",
                 "title_gradient_color",
+                "title_gradient_direction",
             }
             album_color_data = {
                 key: value for key, value in (album_cache.items() if isinstance(album_cache, dict) else []) if key in color_keys
@@ -418,6 +420,13 @@ class FontLoaderWorker(QRunnable):
     def __init__(self): super().__init__(); self.signals = self.Signals()
     @pyqtSlot()
     def run(self):
+        blocked_families = {
+            "Fixedsys",
+            "MS Sans Serif",
+            "MS Serif",
+            "Small Fonts",
+            "System",
+        }
         db = QFontDatabase(); custom_fonts = set()
         for filename in QDir(":/fonts/").entryList(["*.ttf", "*.otf"], QDir.Files):
             fid = QFontDatabase.addApplicationFont(f":/fonts/{filename}")
@@ -425,8 +434,13 @@ class FontLoaderWorker(QRunnable):
         all_families = sorted(list(set(db.families()) | custom_fonts))
         font_styles_cache = {}; base_families = []
         for family in all_families:
+            if family in blocked_families or family.startswith("@"):
+                continue
             if QFontDatabase.WritingSystem.Latin in db.writingSystems(family):
-                font_styles_cache[family] = sorted(db.styles(family)); base_families.append(family)
+                styles = sorted(db.styles(family))
+                if styles:
+                    font_styles_cache[family] = styles
+                    base_families.append(family)
         self.signals.result.emit({"font_styles_cache": font_styles_cache, "base_font_families": base_families})
 
 

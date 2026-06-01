@@ -110,6 +110,8 @@ class SpotifyPlayer(QMainWindow):
         self._prev_track_data = None
         self._last_spotify_track_data = None
         self._pending_track_data = None
+        self._pending_text_color = None
+        self._is_track_transitioning = False
         self._is_paused = False
         self.is_fullscreen = True
         self.is_wallpaper_mode = False
@@ -149,8 +151,15 @@ class SpotifyPlayer(QMainWindow):
         self._current_track_duration = 0
         self._last_progress_sync_time = 0
         self._last_progress_val = 0
+        self._last_reported_progress_val = 0
         self._last_applied_album_id = None
         self._incoming_album_changed = True
+        self._last_display_state = {
+            "title": "Dynamic Player",
+            "artist": "Play music on any device to begin",
+            "album": "Press 'C' for settings & controls",
+        }
+        self._active_text_animations = []
         self._idle_pixmap = None
         self._idle_pil_img = None
         self._bg_crossfade_lerp = 0.0
@@ -189,6 +198,14 @@ class SpotifyPlayer(QMainWindow):
 
         self.NORMAL_MARGINS = (40, 40, 40, 40) 
         self.VERTICAL_ORIENTATION_MARGINS = (80, 80, 80, 80) 
+        self.album_art_target_size_px = 620
+        self._current_art_size_px = 620
+        self._cached_art_size_px = None
+        self._cached_art_is_vertical = None
+        self._cached_content_w = 0
+        self._cached_content_h = 0
+        self._content_line_width_px = 600
+        self._lyrics_line_width_px = 520
         self._cur_text_color = QColor(255, 255, 255)
         self._text_alpha = 255
         self.govee_brightness = 1.0
@@ -225,6 +242,8 @@ class SpotifyPlayer(QMainWindow):
         self.default_text_border_enabled = False
         self.default_auto_border_enabled = False
         self.default_text_border_size = 3
+        self.track_transition_duration_ms = 800
+        self.track_transition_easing = "Out Cubic"
 
         self.container = None
         self.main_layout = None
@@ -393,9 +412,6 @@ class SpotifyPlayer(QMainWindow):
     def _update_native_titlebar_color(self):
         if not IS_WINDOWS:
             return
-        # Packaged builds have shown instability in this optional DWM path on some systems.
-        if getattr(sys, "frozen", False):
-            return
         if not self._is_windowed_mode() or self._is_custom_frameless_windowed_mode():
             self._last_native_caption_rgb = None
             return
@@ -475,6 +491,11 @@ class SpotifyPlayer(QMainWindow):
         self.title.setText("Dynamic Player")
         self.artist.setText("Play music on any device to begin")
         self.album_name.setText("Press 'C' for settings & controls")
+        self._last_display_state = {
+            "title": self.title.text(),
+            "artist": self.artist.text(),
+            "album": self.album_name.text(),
+        }
         self._current_text_color = [200, 200, 200]
 
         self.textAlpha = 255
@@ -491,6 +512,52 @@ class SpotifyPlayer(QMainWindow):
 
         self.fade_in_group.start()
         self.update_layout()
+
+    def _compute_preferred_art_size(self, content_w, content_h, is_vertical):
+        if is_vertical:
+            text_reserve = 300
+            max_size = int(min(content_w - 40, content_h - text_reserve))
+        else:
+            horizontal_gap = 20
+            max_size = int(min(content_h - 40, (content_w - horizontal_gap) * 0.45))
+
+        return max(180, max_size)
+
+    def _sync_art_and_lyrics_bounds(self, content_w, content_h, is_vertical, preferred_art_size):
+        horizontal_gap = 20
+        if is_vertical:
+            text_reserve = 300
+            max_size = int(min(content_w - 40, content_h - text_reserve))
+        else:
+            max_size = int(min(content_h - 40, (content_w - horizontal_gap) * 0.45))
+
+        art_size = max(180, min(int(preferred_art_size), max_size))
+
+        self._current_art_size_px = art_size
+
+        self.art.setFixedSize(art_size, art_size)
+        self.art_container.setFixedSize(art_size, art_size)
+
+        border_width = self.art.borderWidth() if hasattr(self.art, "borderWidth") else 4
+        art_inner_width = max(120, art_size - (2 * int(border_width)))
+
+        if is_vertical:
+            text_line_width = max(220, art_size)
+            lyrics_width = max(140, art_inner_width)
+        else:
+            details_lane_width = max(160, int(content_w - art_size - horizontal_gap))
+            text_line_width = max(180, details_lane_width - 40)
+            lyrics_width = text_line_width
+
+        self._content_line_width_px = text_line_width
+        self._lyrics_line_width_px = lyrics_width
+
+        self.title.setFixedWidth(text_line_width)
+        self.album_name.setFixedWidth(text_line_width)
+        self.artist.setFixedWidth(text_line_width)
+        self.progress_bar.setFixedWidth(text_line_width)
+        if self.lyrics_label:
+            self.lyrics_label.setFixedWidth(lyrics_width)
 
     def _load_govee_settings(self):
         settings = QSettings("SpotifySync", "App")
@@ -869,6 +936,8 @@ class SpotifyPlayer(QMainWindow):
         self.default_progress_bar_enabled = as_bool(settings.value("default_progress_bar_enabled"), False)
         self.default_text_border_enabled = as_bool(settings.value("default_text_border_enabled"), False)
         self.default_text_border_size = int(safe_cast(settings.value("default_text_border_size"), float, 3))
+        self.track_transition_duration_ms = int(max(250, min(2200, safe_cast(settings.value("track_transition_duration_ms"), int, 800))))
+        self.track_transition_easing = str(settings.value("track_transition_easing", "Out Cubic") or "Out Cubic")
         saved_art_side = str(settings.value("player_art_side", "left")).strip().lower()
         self.player_art_side = "right" if saved_art_side == "right" else "left"
 
@@ -1109,12 +1178,14 @@ class SpotifyPlayer(QMainWindow):
 
         # Art and details widgets
         self.art_container = QWidget()
-        self.art_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.art_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         art_container_layout = QVBoxLayout(self.art_container)
         art_container_layout.setContentsMargins(0,0,0,0)
         self.title_shadow = QGraphicsDropShadowEffect(self)
         self.artist_shadow = QGraphicsDropShadowEffect(self)
         self.art = ResponsiveAlbumArtLabel(radius=15)
+        self.art.setFixedSize(self.album_art_target_size_px, self.album_art_target_size_px)
+        self.art_container.setFixedSize(self.album_art_target_size_px, self.album_art_target_size_px)
 
         # --- Details layout must be created before use ---
         self.details_widget = QWidget()
@@ -1163,7 +1234,7 @@ class SpotifyPlayer(QMainWindow):
         self.details_layout.addWidget(self.progress_bar)
         self.details_layout.addWidget(self.lyrics_label)
 
-        art_container_layout.addWidget(self.art)
+        art_container_layout.addWidget(self.art, 0, Qt.AlignCenter)
 
         self.main_layout.addStretch(1)
         self.main_layout.addWidget(self.art_container, 5)
@@ -1642,6 +1713,40 @@ class SpotifyPlayer(QMainWindow):
         
         return None
 
+    def _transition_easing_curve(self):
+        easing_map = {
+            "Out Cubic": QEasingCurve.OutCubic,
+            "In Out Cubic": QEasingCurve.InOutCubic,
+            "Out Quad": QEasingCurve.OutQuad,
+            "In Out Quad": QEasingCurve.InOutQuad,
+            "Linear": QEasingCurve.Linear,
+        }
+        return easing_map.get(str(self.track_transition_easing), QEasingCurve.OutCubic)
+
+    def _apply_track_transition_animation_settings(self):
+        duration = int(max(250, min(2200, int(self.track_transition_duration_ms or 800))))
+        curve = self._transition_easing_curve()
+
+        if hasattr(self, "_art_anim_in") and self._art_anim_in:
+            self._art_anim_in.setDuration(duration)
+            self._art_anim_in.setEasingCurve(curve)
+        if hasattr(self, "_art_anim_out") and self._art_anim_out:
+            self._art_anim_out.setDuration(duration)
+            self._art_anim_out.setEasingCurve(curve)
+        if hasattr(self, "_text_anim_in") and self._text_anim_in:
+            self._text_anim_in.setDuration(duration)
+            self._text_anim_in.setEasingCurve(curve)
+        if hasattr(self, "_text_anim_out") and self._text_anim_out:
+            self._text_anim_out.setDuration(duration)
+            self._text_anim_out.setEasingCurve(curve)
+        if hasattr(self, "_bg_fade_out_anim") and self._bg_fade_out_anim:
+            self._bg_fade_out_anim.setDuration(duration)
+            self._bg_fade_out_anim.setEasingCurve(curve)
+
+        if hasattr(self, "bg_fade_anim") and self.bg_fade_anim:
+            self.bg_fade_anim.setDuration(duration)
+            self.bg_fade_anim.setEasingCurve(curve)
+
     def _setup_animations(self):
         EASING_OUT = QEasingCurve.OutCubic
         EASING_IN_OUT = QEasingCurve.InOutCubic
@@ -1649,88 +1754,34 @@ class SpotifyPlayer(QMainWindow):
         self.fade_out_group = QParallelAnimationGroup(self)
         
         # Art Opacity Animations - Entrance
-        art_anim_in = QPropertyAnimation(self, b"artOpacity")
-        art_anim_in.setDuration(800)
-        art_anim_in.setStartValue(0.0)
-        art_anim_in.setEndValue(1.0)
-        art_anim_in.setEasingCurve(EASING_OUT)
-        self.fade_in_group.addAnimation(art_anim_in)
+        self._art_anim_in = QPropertyAnimation(self, b"artOpacity")
+        self._art_anim_in.setDuration(800)
+        self._art_anim_in.setStartValue(0.0)
+        self._art_anim_in.setEndValue(1.0)
+        self._art_anim_in.setEasingCurve(QEasingCurve.OutCubic)
+        self.fade_in_group.addAnimation(self._art_anim_in)
+
+        self._text_anim_in = QPropertyAnimation(self, b"textAlpha")
+        self._text_anim_in.setDuration(800)
+        self._text_anim_in.setStartValue(0)
+        self._text_anim_in.setEndValue(255)
+        self._text_anim_in.setEasingCurve(QEasingCurve.OutCubic)
+        self.fade_in_group.addAnimation(self._text_anim_in)
         
         # Art Opacity Animations - Exit
-        art_anim_out = QPropertyAnimation(self, b"artOpacity")
-        art_anim_out.setDuration(800)
-        art_anim_out.setStartValue(1.0)
-        art_anim_out.setEndValue(0.0)
-        art_anim_out.setEasingCurve(EASING_OUT)
-        self.fade_out_group.addAnimation(art_anim_out)
+        self._art_anim_out = QPropertyAnimation(self, b"artOpacity")
+        self._art_anim_out.setDuration(800)
+        self._art_anim_out.setStartValue(1.0)
+        self._art_anim_out.setEndValue(0.0)
+        self._art_anim_out.setEasingCurve(QEasingCurve.OutCubic)
+        self.fade_out_group.addAnimation(self._art_anim_out)
 
-        # Staggered Text Entrance
-        def add_staggered_anim(target, delay):
-            # Opacity animation - start at 0.0 (fully transparent)
-            op_anim = QPropertyAnimation(target, b"opacity")
-            op_anim.setDuration(800)
-            op_anim.setStartValue(0.0)
-            op_anim.setEndValue(1.0)
-            op_anim.setEasingCurve(QEasingCurve.Linear)
-            
-            # Scale In
-            slide_anim = QPropertyAnimation(target, b"textScale")
-            slide_anim.setDuration(800)
-            slide_anim.setStartValue(0.94)
-            slide_anim.setEndValue(1.0)
-            slide_anim.setEasingCurve(QEasingCurve.OutCubic)
-            
-            if delay > 0:
-                seq_op = QSequentialAnimationGroup()
-                seq_op.addPause(delay)
-                seq_op.addAnimation(op_anim)
-                self.fade_in_group.addAnimation(seq_op)
-                
-                seq_slide = QSequentialAnimationGroup()
-                seq_slide.addPause(delay)
-                seq_slide.addAnimation(slide_anim)
-                self.fade_in_group.addAnimation(seq_slide)
-            else:
-                self.fade_in_group.addAnimation(op_anim)
-                self.fade_in_group.addAnimation(slide_anim)
-
-        add_staggered_anim(self.title, 0)
-        add_staggered_anim(self.album_name, 100)
-        add_staggered_anim(self.artist, 200)
-
-        # Text Exit (Scale Out then fade)
-        def add_exit_anim(target, delay):
-            # Scale out while fading
-            slide_out = QPropertyAnimation(target, b"textScale")
-            slide_out.setDuration(800)
-            slide_out.setStartValue(1.0)
-            slide_out.setEndValue(0.94)
-            slide_out.setEasingCurve(QEasingCurve.InCubic)
-
-            # Opacity - fade to transparent
-            op_out = QPropertyAnimation(target, b"opacity")
-            op_out.setDuration(800)
-            op_out.setStartValue(1.0)
-            op_out.setEndValue(0.0)
-            op_out.setEasingCurve(QEasingCurve.Linear)
-
-            if delay > 0:
-                seq_slide = QSequentialAnimationGroup()
-                seq_slide.addPause(delay)
-                seq_slide.addAnimation(slide_out)
-                self.fade_out_group.addAnimation(seq_slide)
-
-                seq_op = QSequentialAnimationGroup()
-                seq_op.addPause(delay)
-                seq_op.addAnimation(op_out)
-                self.fade_out_group.addAnimation(seq_op)
-            else:
-                self.fade_out_group.addAnimation(slide_out)
-                self.fade_out_group.addAnimation(op_out)
-
-        add_exit_anim(self.title, 0)
-        add_exit_anim(self.album_name, 100)
-        add_exit_anim(self.artist, 200)
+        self._text_anim_out = QPropertyAnimation(self, b"textAlpha")
+        self._text_anim_out.setDuration(800)
+        self._text_anim_out.setStartValue(255)
+        self._text_anim_out.setEndValue(0)
+        self._text_anim_out.setEasingCurve(QEasingCurve.OutCubic)
+        self.fade_out_group.addAnimation(self._text_anim_out)
         
         # Color and background fade animations
         self.fade_out_group.finished.connect(self._on_fade_out_finished)
@@ -1747,12 +1798,14 @@ class SpotifyPlayer(QMainWindow):
         self.bg_fade_anim.setEasingCurve(EASING_IN_OUT)
 
         # Background fade out animation
-        bg_fade_out_anim = QPropertyAnimation(self, b"bgCrossfadeLerp")
-        bg_fade_out_anim.setDuration(800)
-        bg_fade_out_anim.setStartValue(1.0)
-        bg_fade_out_anim.setEndValue(0.0)
-        bg_fade_out_anim.setEasingCurve(EASING_OUT)
-        self.fade_out_group.addAnimation(bg_fade_out_anim)
+        self._bg_fade_out_anim = QPropertyAnimation(self, b"bgCrossfadeLerp")
+        self._bg_fade_out_anim.setDuration(800)
+        self._bg_fade_out_anim.setStartValue(1.0)
+        self._bg_fade_out_anim.setEndValue(0.0)
+        self._bg_fade_out_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.fade_out_group.addAnimation(self._bg_fade_out_anim)
+
+        self._apply_track_transition_animation_settings()
         
         # Art scale animation
         self.art_scale_anim = QPropertyAnimation(self.art, b"scale")
@@ -1760,6 +1813,139 @@ class SpotifyPlayer(QMainWindow):
         self.art_scale_anim.setStartValue(0.9)
         self.art_scale_anim.setEndValue(1.0)
         self.art_scale_anim.setEasingCurve(EASING_OUT)
+
+    def _current_spotify_progress_ms(self, now_ms=None):
+        if now_ms is None:
+            now_ms = QDateTime.currentMSecsSinceEpoch()
+        if self._is_paused or self.active_media_source != 'spotify':
+            return self._last_progress_val
+
+        elapsed = max(0, now_ms - self._last_progress_sync_time)
+        return min(self._last_progress_val + elapsed, self._current_track_duration)
+
+    def _sync_spotify_progress(self, progress_ms, duration_ms=None):
+        if duration_ms is not None:
+            self._current_track_duration = duration_ms
+
+        now_ms = QDateTime.currentMSecsSinceEpoch()
+        progress_ms = max(0, int(progress_ms or 0))
+        estimated_ms = self._current_spotify_progress_ms(now_ms)
+
+        if self._last_progress_sync_time and abs(progress_ms - estimated_ms) <= 350:
+            self._last_progress_val = estimated_ms
+        else:
+            self._last_progress_val = progress_ms
+
+        self._last_reported_progress_val = progress_ms
+        self._last_progress_sync_time = now_ms
+
+    def _apply_spotify_playback_state(self, is_playing, allow_source_switch=True):
+        is_paused = not bool(is_playing)
+        if is_paused == self._is_paused:
+            if is_playing and allow_source_switch and self.active_media_source != 'spotify' and self._last_spotify_track_data and self._is_media_method_enabled('spotify'):
+                self._last_spotify_track_data['is_playing'] = True
+                self._on_spotify_track_changed(self._last_spotify_track_data)
+            return
+
+        self._is_paused = is_paused
+
+        if is_playing and allow_source_switch and self.active_media_source != 'spotify' and self._last_spotify_track_data and self._is_media_method_enabled('spotify'):
+            self._last_spotify_track_data['is_playing'] = True
+            self._on_spotify_track_changed(self._last_spotify_track_data)
+
+    def _finish_text_animation(self, animation):
+        if animation in self._active_text_animations:
+            self._active_text_animations.remove(animation)
+
+    def _animate_text_field_change(self, widget, new_text, delay_ms=0):
+        if widget.text() == new_text:
+            widget.setProperty("opacity", 1.0)
+            widget.setProperty("textScale", 1.0)
+            return False
+
+        # During track transitions, just set text immediately without animations
+        # This keeps the transition clean with only opacity fading
+        if self._is_track_transitioning:
+            widget.setText(new_text)
+            widget.setProperty("opacity", 1.0)
+            widget.setProperty("textScale", 1.0)
+            return True
+
+        def start_transition():
+            current_opacity = float(widget.property("opacity") if widget.property("opacity") is not None else 1.0)
+
+            fade_out = QParallelAnimationGroup(self)
+
+            out_opacity = QPropertyAnimation(widget, b"opacity")
+            out_opacity.setDuration(140)
+            out_opacity.setStartValue(current_opacity)
+            out_opacity.setEndValue(0.0)
+            out_opacity.setEasingCurve(QEasingCurve.InOutQuad)
+            fade_out.addAnimation(out_opacity)
+
+            out_scale = QPropertyAnimation(widget, b"textScale")
+            out_scale.setDuration(140)
+            out_scale.setStartValue(float(widget.property("textScale") or 1.0))
+            out_scale.setEndValue(0.97)
+            out_scale.setEasingCurve(QEasingCurve.InCubic)
+            fade_out.addAnimation(out_scale)
+
+            def fade_in_new_text():
+                widget.setText(new_text)
+                widget.setProperty("opacity", 0.0)
+                widget.setProperty("textScale", 0.97)
+
+                fade_in = QParallelAnimationGroup(self)
+
+                in_opacity = QPropertyAnimation(widget, b"opacity")
+                in_opacity.setDuration(260)
+                in_opacity.setStartValue(0.0)
+                in_opacity.setEndValue(1.0)
+                in_opacity.setEasingCurve(QEasingCurve.InOutQuad)
+                fade_in.addAnimation(in_opacity)
+
+                in_scale = QPropertyAnimation(widget, b"textScale")
+                in_scale.setDuration(260)
+                in_scale.setStartValue(0.97)
+                in_scale.setEndValue(1.0)
+                in_scale.setEasingCurve(QEasingCurve.OutCubic)
+                fade_in.addAnimation(in_scale)
+
+                fade_in.finished.connect(lambda: self._finish_text_animation(fade_in))
+                self._active_text_animations.append(fade_in)
+                fade_in.start()
+
+            fade_out.finished.connect(fade_in_new_text)
+            fade_out.finished.connect(lambda: self._finish_text_animation(fade_out))
+            self._active_text_animations.append(fade_out)
+            fade_out.start()
+
+        if delay_ms > 0:
+            QTimer.singleShot(delay_ms, start_transition)
+        else:
+            start_transition()
+
+        return True
+
+    def _apply_display_text_changes(self, title_text, album_text, artist_text):
+        previous_state = self._last_display_state or {}
+        changed_any = False
+        changed_any = self._animate_text_field_change(self.title, title_text, 0) or changed_any
+        changed_any = self._animate_text_field_change(self.album_name, album_text, 90) or changed_any
+        changed_any = self._animate_text_field_change(self.artist, artist_text, 180) or changed_any
+
+        if not changed_any:
+            self.title.setText(title_text)
+            self.album_name.setText(album_text)
+            self.artist.setText(artist_text)
+
+        self._last_display_state = {
+            "title": title_text,
+            "album": album_text,
+            "artist": artist_text,
+        }
+
+        return previous_state != self._last_display_state
 
     def _setup_tray_icon(self):
         """Initializes the system tray icon and its context menu."""
@@ -1888,8 +2074,7 @@ class SpotifyPlayer(QMainWindow):
         # Lyrics must tick regardless of window visibility so they stay in sync
         # when the player is unfocused, minimized, or behind other windows.
         if self._current_lyrics and not self._is_paused and self.active_media_source == 'spotify' and self.lyrics_label and self.lyrics_label.isVisible():
-            elapsed = QDateTime.currentMSecsSinceEpoch() - self._last_progress_sync_time
-            current_ms = min(self._last_progress_val + elapsed, self._current_track_duration)
+            current_ms = self._current_spotify_progress_ms()
 
             new_index = -1
             for i, (ts, _) in enumerate(self._current_lyrics):
@@ -1909,8 +2094,7 @@ class SpotifyPlayer(QMainWindow):
         if self.isMinimized() or self.isHidden(): return
         if self._current_progress_bar_enabled and self.active_media_source == 'spotify':
             if not self._is_paused and self._current_track_duration > 0:
-                elapsed = (QDateTime.currentMSecsSinceEpoch() - self._last_progress_sync_time)
-                current = min(self._last_progress_val + elapsed, self._current_track_duration)
+                current = self._current_spotify_progress_ms()
                 self.progress_bar.setTargetValue(current)
             elif self._is_paused:
                 self.progress_bar.setTargetValue(self._last_progress_val)
@@ -1943,10 +2127,8 @@ class SpotifyPlayer(QMainWindow):
         self.idle_timer.stop()
         self.active_media_source = 'spotify'
         self._last_spotify_track_data = data
-        
-        self._current_track_duration = data["item"]["duration_ms"]
-        self._last_progress_val = data["progress_ms"]
-        self._last_progress_sync_time = QDateTime.currentMSecsSinceEpoch()
+
+        self._sync_spotify_progress(data["progress_ms"], data["item"]["duration_ms"])
         self.progress_bar.setRange(0, self._current_track_duration)
         self.progress_bar.setTargetValue(self._last_progress_val, snap=True)
 
@@ -2115,6 +2297,46 @@ class SpotifyPlayer(QMainWindow):
         worker.signals.art_loaded.connect(self._on_high_res_art_loaded) 
         self.threadpool.start(worker)
 
+    def _freeze_widget_geometry(self):
+        """Lock widget sizes to prevent layout shifts during fade transitions."""
+        self.art.setFixedSize(self.art.width(), self.art.height())
+        self.title.setFixedHeight(self.title.height())
+        self.artist.setFixedHeight(self.artist.height())
+        self.album_name.setFixedHeight(self.album_name.height())
+        self.details_widget.setFixedSize(self.details_widget.width(), self.details_widget.height())
+
+    def _unfreeze_widget_geometry(self):
+        """Allow widgets to resize normally after transitions complete."""
+        # Keep album art locked to computed size to avoid reflow jitter.
+        self.art.setFixedSize(self._current_art_size_px, self._current_art_size_px)
+        self.art_container.setFixedSize(self._current_art_size_px, self._current_art_size_px)
+        self.title.setMinimumHeight(0)
+        self.title.setMaximumHeight(16777215)
+        self.artist.setMinimumHeight(0)
+        self.artist.setMaximumHeight(16777215)
+        self.album_name.setMinimumHeight(0)
+        self.album_name.setMaximumHeight(16777215)
+        self.details_widget.setMinimumSize(0, 0)
+        self.details_widget.setMaximumSize(16777215, 16777215)
+
+    def _unfreeze_and_update_layout(self):
+        """Unfreeze geometry and trigger final layout update after fade-in completes."""
+        self._unfreeze_widget_geometry()
+        self._is_track_transitioning = False  # Clear transition flag when done
+        self.textAlpha = 255  # Restore text alpha after fade-in completes
+        self.update_layout()
+        # Now apply all visual property updates that were deferred during the animation
+        self._update_text_properties()
+        # Animate text color change if needed
+        if hasattr(self, '_pending_text_color') and self._pending_text_color:
+            if self._pending_text_color != self._cur_text_color:
+                self.text_color_anim.setStartValue(self._cur_text_color)
+                self.text_color_anim.setEndValue(self._pending_text_color)
+                self.text_color_anim.start()
+            else:
+                self.text_color_anim.stop()
+            self._pending_text_color = None
+
     @pyqtSlot(dict)
     def _on_track_data_loaded(self, result_data):
         if result_data['token'] != self.load_token: return
@@ -2122,23 +2344,19 @@ class SpotifyPlayer(QMainWindow):
         self._pending_track_data = result_data
         self._pending_track_data["high_res_loaded"] = False
         self._pending_track_data["album_changed"] = bool(self._incoming_album_changed)
-
-        if not self._pending_track_data["album_changed"]:
-            self._old_bg_color = self._current_bg_color
-            if self.fade_out_group.state() == QAbstractAnimation.Running:
-                self.fade_out_group.stop()
-            self._apply_pending_track_data()
-            return
-
         is_visible = self.artOpacity > 0.01 or self.textAlpha > 1
+        self._pending_track_data["needs_fade_transition"] = bool(is_visible)
         
         if is_visible:
             if self.fade_in_group.state() == QAbstractAnimation.Running:
                 self.fade_in_group.stop()
             self._old_bg_color = self._current_bg_color
             if self.fade_out_group.state() != QAbstractAnimation.Running:
+                self._is_track_transitioning = True  # Flag that we're in a transition
+                self._freeze_widget_geometry()  # Lock positions before fading out
                 self.fade_out_group.start()
         else:
+            self._is_track_transitioning = False
             self._apply_pending_track_data()
 
         # Update Dialog if visible
@@ -2176,6 +2394,7 @@ class SpotifyPlayer(QMainWindow):
         result_data = self._pending_track_data
         self._pending_track_data = None
         album_changed = bool(result_data.get("album_changed", True))
+        transition_active = bool(result_data.get("needs_fade_transition", False))
 
         # Set the aspect ratio here, after the old art has faded out.
         new_aspect_ratio = self._prev_track_data.get("aspect_ratio", 1.0)
@@ -2194,7 +2413,9 @@ class SpotifyPlayer(QMainWindow):
             "lights_config",
             "text_color",
             "text_border_color",
+            "title_gradient_enabled",
             "title_gradient_color",
+            "title_gradient_direction",
         }
         cached_data = album_cache.copy() if isinstance(album_cache, dict) else {}
         if isinstance(track_cache, dict):
@@ -2282,15 +2503,16 @@ class SpotifyPlayer(QMainWindow):
         album_text = self._apply_case_transform(item["album"]["name"], self._current_artist_case)
         title_text = self._apply_case_transform(item["name"], self._current_title_case)
         artist_text = self._apply_case_transform(", ".join(a["name"] for a in item["artists"]), self._current_artist_case)
+        self._apply_display_text_changes(title_text, album_text, artist_text)
 
-        self.album_name.setText(album_text)
-        self.title.setText(title_text)
-        self.artist.setText(artist_text)
-
-        self.art.scale = 0.9 
-        self.art_scale_anim.setStartValue(0.9)
-        self.art_scale_anim.setEndValue(1.0)
-        self.art_scale_anim.start()
+        if album_changed:
+            self.art.scale = 0.9
+            self.art_scale_anim.setStartValue(0.9)
+            self.art_scale_anim.setEndValue(1.0)
+            self.art_scale_anim.start()
+        else:
+            self.art_scale_anim.stop()
+            self.art.scale = 1.0
 
         # Update lights for the currently active media source using the same palette/brightness logic.
         lights_config = result_data.get("lights_config") or {}
@@ -2314,7 +2536,8 @@ class SpotifyPlayer(QMainWindow):
             worker.signals.error.connect(self._on_govee_error)
             self.threadpool.start(worker)
         self.notification_widget.fade_out()
-        self.textAlpha = 255
+        # Don't set textAlpha to 255 here - keep it at 0 during fade animations
+        # It will be restored in _unfreeze_and_update_layout after fade-in completes
         if album_changed:
             self._bg_crossfade_lerp = 0.0  # Ensure it starts from the "from" state
             self.bg_fade_anim.setStartValue(0.0)
@@ -2324,21 +2547,26 @@ class SpotifyPlayer(QMainWindow):
             self.bg_fade_anim.stop()
             self.setBgCrossfadeLerp(1.0)
         self._trigger_notification(title_text, artist_text, self._current_pil_img, QColor(*new_text_rgb))
-        if album_changed:
+        if transition_active:
+            # Connect fade_in to unfreeze AFTER animation completes, not before
+            try:
+                self.fade_in_group.finished.disconnect()
+            except TypeError:
+                pass
+            self.fade_in_group.finished.connect(lambda: self._unfreeze_and_update_layout())
             self.fade_in_group.start()
         else:
+            self._is_track_transitioning = False
             self.artOpacity = 1.0
-        self._on_playback_state_changed(self._prev_track_data)
-        self.update_layout() 
-        self._update_text_properties()
-
-        if album_changed:
-            self.text_color_anim.setStartValue(self._cur_text_color)
-            self.text_color_anim.setEndValue(QColor(*new_text_rgb))
-            self.text_color_anim.start()
-        else:
-            self.text_color_anim.stop()
-            self.setTextColor(QColor(*new_text_rgb))
+            self.textAlpha = 255
+        self._apply_spotify_playback_state(self._prev_track_data.get("is_playing", False), allow_source_switch=False)
+        
+        # Layout update happens while frozen during transitions; widgets won't shift.
+        self.update_layout()
+        
+        # DON'T update text properties or animate colors yet - wait until fade-in completes
+        # Store the new text color to apply after fade-in
+        self._pending_text_color = QColor(*new_text_rgb)
 
         self._last_applied_album_id = self._current_album_id
 
@@ -2392,7 +2620,9 @@ class SpotifyPlayer(QMainWindow):
             "lights_config",
             "text_color",
             "text_border_color",
+            "title_gradient_enabled",
             "title_gradient_color",
+            "title_gradient_direction",
         }
         cached_data = album_cache.copy() if isinstance(album_cache, dict) else {}
         if isinstance(track_cache, dict):
@@ -2698,6 +2928,8 @@ class SpotifyPlayer(QMainWindow):
         self.default_progress_bar_enabled = settings.value("default_progress_bar_enabled", "false") == "true"
         self.default_text_border_enabled = settings.value("default_text_border_enabled", "false") == "true"
         self.default_text_border_size = int(settings.value("default_text_border_size", 3))
+        self.track_transition_duration_ms = int(max(250, min(2200, int(settings.value("track_transition_duration_ms", 800)))))
+        self.track_transition_easing = str(settings.value("track_transition_easing", "Out Cubic") or "Out Cubic")
         val = settings.value("default_govee_brightness")
         if val is not None:
             self.default_govee_brightness = float(val)
@@ -2710,6 +2942,8 @@ class SpotifyPlayer(QMainWindow):
         self.lava_lamp_preset = "color_pop"
         if self.background_renderer:
             self.background_renderer.set_style_preset(self.lava_lamp_preset)
+
+        self._apply_track_transition_animation_settings()
 
         self._configure_media_workers()
         if self.active_media_source and not self._is_media_method_enabled(self.active_media_source):
@@ -3021,54 +3255,84 @@ class SpotifyPlayer(QMainWindow):
         is_vertical = effective_h >= effective_w
         details_layout = self.details_widget.layout()
 
-        if is_vertical:
-            # In vertical mode, the details widget can take the full width.
-            self.details_widget.setMaximumWidth(16777215) # QWIDGETSIZE_MAX
+        m = self.VERTICAL_ORIENTATION_MARGINS if is_vertical else self.NORMAL_MARGINS
+        content_w = max(260, effective_w - m[0] - m[2])
+        content_h = max(260, effective_h - m[1] - m[3])
+
+        should_recompute_art_size = (
+            self._cached_art_size_px is None
+            or self._cached_art_is_vertical != is_vertical
+            or content_w > (self._cached_content_w + 180)
+            or content_h > (self._cached_content_h + 180)
+        )
+        if should_recompute_art_size:
+            self._cached_art_size_px = self._compute_preferred_art_size(content_w, content_h, is_vertical)
+            self._cached_art_is_vertical = is_vertical
+            self._cached_content_w = content_w
+            self._cached_content_h = content_h
+
+        preferred_art_size = self._cached_art_size_px if self._cached_art_size_px is not None else self._compute_preferred_art_size(content_w, content_h, is_vertical)
+        self._sync_art_and_lyrics_bounds(content_w, content_h, is_vertical, preferred_art_size)
+
+        details_width = min(content_w, self._content_line_width_px + 40)
+        self.details_widget.setFixedWidth(details_width)
+
+        details_hint_h = self.details_widget.sizeHint().height() if self.details_widget else 0
+        vertical_gap = max(24, min(64, int(content_h * 0.06)))
+        max_top_space = max(20, content_h - (self._current_art_size_px + vertical_gap + details_hint_h + 20))
+        remaining_after_stack = max(0, content_h - (self._current_art_size_px + vertical_gap + details_hint_h))
+        preferred_top_space = int(remaining_after_stack * 0.28)
+        center_line_limit = int((content_h * 0.5) - self._current_art_size_px - 8)
+        capped_top_space = min(max_top_space, center_line_limit)
+        if capped_top_space >= 20:
+            top_space = max(20, min(preferred_top_space, capped_top_space))
         else:
-            # In horizontal mode, cap the width of the details widget to prevent
-            # it from shrinking the album art too much with long text.
-            max_details_width = int(effective_w * 0.60)
-            self.details_widget.setMaximumWidth(max_details_width)
+            top_space = max(20, min(max_top_space, preferred_top_space))
+        horizontal_art_outer_inset = max(18, min(72, int(content_w * 0.05)))
 
         if is_vertical:
             self.main_layout.setDirection(QBoxLayout.TopToBottom)
-            m = self.VERTICAL_ORIENTATION_MARGINS
             self.main_layout.setContentsMargins(m[0] + extra_left, m[1] + extra_top, m[2] + extra_right, m[3] + extra_bottom)
-            details_layout.setAlignment(Qt.AlignCenter)
+            self.main_layout.setSpacing(vertical_gap)
+            details_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
             self.title.setAlignment(Qt.AlignCenter)
             self.artist.setAlignment(Qt.AlignCenter)
             self.album_name.setAlignment(Qt.AlignCenter)
-            self.progress_bar.setFixedWidth(340)
         else:
             self.main_layout.setDirection(QBoxLayout.LeftToRight)
-            m = self.NORMAL_MARGINS # Use normal margins for horizontal layout
             self.main_layout.setContentsMargins(m[0] + extra_left, m[1] + extra_top, m[2] + extra_right, m[3] + extra_bottom)
+            self.main_layout.setSpacing(20)
             details_layout.setAlignment(Qt.AlignCenter)
             self.title.setAlignment(Qt.AlignCenter)
             self.album_name.setAlignment(Qt.AlignCenter)
             self.artist.setAlignment(Qt.AlignCenter)
-            self.progress_bar.setFixedWidth(550)
 
         while self.main_layout.count():
             self.main_layout.takeAt(0)
 
         if is_vertical:
             details_layout.insertWidget(1, self.album_name) # Re-insert album name
+            self.main_layout.addSpacing(top_space)
+            self.main_layout.addWidget(self.art_container, 0, Qt.AlignHCenter)
+            self.main_layout.addWidget(self.details_widget, 0, Qt.AlignHCenter)
             self.main_layout.addStretch(1)
-            self.main_layout.addWidget(self.art_container, 5)
-            self.main_layout.addWidget(self.details_widget, 2, Qt.AlignCenter)
-            self.main_layout.addStretch(1)
-            details_layout.setAlignment(self.progress_bar, Qt.AlignCenter)
+            details_layout.setAlignment(self.progress_bar, Qt.AlignHCenter)
+            if self.lyrics_label:
+                details_layout.setAlignment(self.lyrics_label, Qt.AlignHCenter)
         else:
             self.main_layout.addStretch(1)
             if self.player_art_side == "right":
-                self.main_layout.addWidget(self.details_widget, 6)
-                self.main_layout.addWidget(self.art_container, 5)
+                self.main_layout.addWidget(self.details_widget, 1, Qt.AlignVCenter)
+                self.main_layout.addWidget(self.art_container, 0, Qt.AlignVCenter)
+                self.main_layout.addSpacing(horizontal_art_outer_inset)
             else:
-                self.main_layout.addWidget(self.art_container, 5)
-                self.main_layout.addWidget(self.details_widget, 6)
+                self.main_layout.addSpacing(horizontal_art_outer_inset)
+                self.main_layout.addWidget(self.art_container, 0, Qt.AlignVCenter)
+                self.main_layout.addWidget(self.details_widget, 1, Qt.AlignVCenter)
             details_layout.insertWidget(1, self.album_name) # Re-insert album name
-            details_layout.addWidget(self.progress_bar, 0, Qt.AlignCenter)
+            details_layout.addWidget(self.progress_bar, 0, Qt.AlignHCenter)
+            if self.lyrics_label:
+                details_layout.setAlignment(self.lyrics_label, Qt.AlignHCenter)
             self.main_layout.addStretch(1)
 
         self.details_widget.setContentsMargins(20 if is_vertical else 40, 0, 20, 0)
@@ -3079,21 +3343,8 @@ class SpotifyPlayer(QMainWindow):
     def _on_playback_state_changed(self, data):
         if not self._is_media_method_enabled('spotify'):
             return
-        is_playing = data.get("is_playing", False)
-        self._last_progress_val = data.get("progress_ms", 0)
-        self._last_progress_sync_time = QDateTime.currentMSecsSinceEpoch()
-        
-        is_paused = not is_playing
-        if is_paused == self._is_paused:
-            return
-        self._is_paused = is_paused
-
-        # If Spotify starts playing (was paused, now playing) while we are viewing
-        # another media source, we should switch back to Spotify.
-        if is_playing and self.active_media_source != 'spotify' and self._last_spotify_track_data and self._is_media_method_enabled('spotify'):
-            # A spotify track exists and has just started playing. Re-assert it as the active source.
-            self._last_spotify_track_data['is_playing'] = True
-            self._on_spotify_track_changed(self._last_spotify_track_data)
+        self._sync_spotify_progress(data.get("progress_ms", 0), self._current_track_duration)
+        self._apply_spotify_playback_state(data.get("is_playing", False))
         
     def setBgCrossfadeLerp(self, value):
         self._bg_crossfade_lerp = value
@@ -3141,6 +3392,7 @@ class SpotifyPlayer(QMainWindow):
         self.progress_bar.set_color(text_with_alpha)
         if self.lyrics_label:
             self.lyrics_label.setTextColor(text_with_alpha)
+            self.lyrics_label.setGradient(title_gradient_enabled, title_gradient_color, title_gradient_direction)
             self.lyrics_label.setBorder(self._current_text_border_enabled, border_c, self._current_text_border_size)
 
     def update_art_shadow_properties(self):
@@ -3149,6 +3401,25 @@ class SpotifyPlayer(QMainWindow):
         self.art_shadow.setColor(QColor(0, 0, 0, 80))
         self.art_shadow.setOffset(0, 8)
         self.art_shadow.setEnabled(self.art._opacity > 0)
+
+    def _resolve_safe_font_family(self, family_name):
+        blocked_families = {
+            "Fixedsys",
+            "MS Sans Serif",
+            "MS Serif",
+            "Small Fonts",
+            "System",
+        }
+        db = QFontDatabase()
+        all_families = set(db.families())
+        candidate = str(family_name or "").strip()
+        if candidate and candidate not in blocked_families and candidate in all_families:
+            return candidate
+        if "Trebuchet MS" in all_families:
+            return "Trebuchet MS"
+        if "Segoe UI" in all_families:
+            return "Segoe UI"
+        return QFont().defaultFamily()
 
     def _update_text_properties(self):
         if not self.art or self.art.width() < 50: 
@@ -3162,20 +3433,24 @@ class SpotifyPlayer(QMainWindow):
         user_scale = self._current_font_size_scale / 100.0
 
         db = QFontDatabase()
-        title_font = db.font(self._current_font_family, self._current_font_style, -1)
+        safe_family = self._resolve_safe_font_family(self._current_font_family)
+        if safe_family != self._current_font_family:
+            self._current_font_family = safe_family
+
+        title_font = db.font(safe_family, self._current_font_style, -1)
         title_font.setPixelSize(int(max(12, 28 * scale_factor * user_scale)))
         self.title.setFont(title_font)
 
-        artist_font = db.font(self._current_font_family, self._current_font_style, -1)
+        artist_font = db.font(safe_family, self._current_font_style, -1)
         artist_font.setPixelSize(int(max(10, 22 * scale_factor * user_scale)))
         self.artist.setFont(artist_font)
         
         # New: Album name font size
-        album_font = db.font(self._current_font_family, self._current_font_style, -1)
+        album_font = db.font(safe_family, self._current_font_style, -1)
         album_font.setPixelSize(int(max(9, 18 * scale_factor * user_scale))) # Slightly smaller than artist
         self.album_name.setFont(album_font)
 
-        lyrics_font = db.font(self._current_font_family, self._current_font_style, -1)
+        lyrics_font = db.font(safe_family, self._current_font_style, -1)
         lyrics_font.setPixelSize(int(max(9, 18 * scale_factor * user_scale)))
         if self.lyrics_label:
             self.lyrics_label.setFont(lyrics_font)

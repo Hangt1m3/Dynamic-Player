@@ -4,6 +4,8 @@ def get_common_stylesheet(bg_color, text_color, accent_color):
     is_bg_light = bg_color.lightnessF() > 0.5
     text_hex = text_color.name()
     accent_hex = accent_color.name()
+    ar, ag, ab = accent_color.red(), accent_color.green(), accent_color.blue()
+    tr, tg, tb = text_color.red(), text_color.green(), text_color.blue()
     
     input_bg = bg_color.darker(110).name() if is_bg_light else bg_color.lighter(125).name()
     btn_bg = bg_color.darker(105).name() if is_bg_light else bg_color.lighter(115).name()
@@ -13,10 +15,8 @@ def get_common_stylesheet(bg_color, text_color, accent_color):
     scrollbar_handle = accent_color.darker(110).name() if accent_color.lightnessF() > 0.5 else accent_color.lighter(130).name()
     popup_bg = bg_color.darker(105).name() if is_bg_light else bg_color.lighter(115).name()
     
-    # Define disabled colors
     disabled_text = "#888888"
     disabled_border = "#555555"
-    disabled_bg = "transparent"
 
     return f"""
         QWidget {{ color: {text_hex}; font-family: 'Segoe UI', sans-serif; font-size: 14px; selection-background-color: {accent_hex}; selection-color: {text_hex}; }}
@@ -29,14 +29,45 @@ def get_common_stylesheet(bg_color, text_color, accent_color):
         QScrollArea > QWidget > QWidget {{ background: transparent; }}
         #scrollAreaContent {{ background: transparent; }}
         
-        QGroupBox {{ border: 1px solid {accent_hex}; border-radius: 8px; margin-top: 12px; padding-top: 10px; font-weight: bold; }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
+        QGroupBox {{
+            border: 1px solid rgba({ar}, {ag}, {ab}, 110);
+            border-radius: 10px;
+            margin-top: 14px;
+            padding: 12px 10px 10px 10px;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 12px;
+            top: 0px;
+            padding: 0 6px;
+            font-weight: bold;
+            font-size: 13px;
+        }}
         
-        QLineEdit, QTextBrowser, QPlainTextEdit {{ background: {input_bg}; color: {text_hex}; border: 1px solid {accent_hex}; border-radius: 6px; padding: 6px; }}
+        QLineEdit, QTextBrowser, QPlainTextEdit {{
+            background: {input_bg};
+            color: {text_hex};
+            border: 1px solid rgba({ar}, {ag}, {ab}, 90);
+            border-radius: 7px;
+            padding: 7px 9px;
+        }}
+        QLineEdit:focus, QPlainTextEdit:focus {{
+            border: 1.5px solid {accent_hex};
+        }}
         QLineEdit:disabled {{ border: 1px solid {disabled_border}; color: {disabled_text}; background: rgba(0,0,0,0.1); }}
         
-        QPushButton {{ background-color: {btn_bg}; color: {text_hex}; border: 1px solid {accent_hex}; border-radius: 6px; padding: 6px 12px; }}
-        QPushButton:hover {{ background-color: {btn_hover}; }}
+        QPushButton {{
+            background-color: {btn_bg};
+            color: {text_hex};
+            border: 1px solid rgba({ar}, {ag}, {ab}, 90);
+            border-radius: 8px;
+            padding: 7px 14px;
+            font-size: 13px;
+        }}
+        QPushButton:hover {{
+            background-color: {btn_hover};
+            border-color: {accent_hex};
+        }}
         QPushButton:pressed {{ background-color: {btn_pressed}; }}
         QPushButton:disabled {{ border: 1px solid {disabled_border}; color: {disabled_text}; background-color: rgba(255,255,255,0.05); }}
         
@@ -51,39 +82,130 @@ def get_common_stylesheet(bg_color, text_color, accent_color):
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
         
         QCheckBox {{ spacing: 8px; }}
-        QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid {accent_hex}; background: {input_bg}; }}
+        QCheckBox::indicator {{
+            width: 17px;
+            height: 17px;
+            border-radius: 5px;
+            border: 1px solid rgba({ar}, {ag}, {ab}, 140);
+            background: {input_bg};
+        }}
         QCheckBox::indicator:checked {{ background-color: {accent_hex}; border: 1px solid {accent_hex}; }}
+        QCheckBox::indicator:hover {{ border: 1.5px solid {accent_hex}; }}
         QCheckBox::indicator:disabled {{ border: 1px solid {disabled_border}; background-color: transparent; }}
         
         QRadioButton {{ spacing: 8px; }}
-        QRadioButton::indicator {{ width: 16px; height: 16px; border-radius: 8px; border: 1px solid {accent_hex}; background: {input_bg}; }}
+        QRadioButton::indicator {{
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            border: 1px solid rgba({ar}, {ag}, {ab}, 140);
+            background: {input_bg};
+        }}
         QRadioButton::indicator:checked {{ background-color: {accent_hex}; border: 3px solid {input_bg}; }}
         QRadioButton::indicator:disabled {{ border: 1px solid {disabled_border}; background-color: transparent; }}
         
-        QComboBox {{ background: {input_bg}; border: 1px solid {accent_hex}; border-radius: 6px; padding: 5px; min-width: 6em; }}
-        QComboBox::drop-down {{ border: none; width: 20px; }}
-        QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 5px solid {text_hex}; margin-right: 5px; }}
+        QComboBox {{
+            background: {input_bg};
+            border: 1px solid rgba({ar}, {ag}, {ab}, 90);
+            border-radius: 7px;
+            padding: 6px 8px;
+            min-width: 6em;
+        }}
+        QComboBox:focus {{ border: 1.5px solid {accent_hex}; }}
+        QComboBox::drop-down {{ border: none; width: 22px; }}
+        QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid {text_hex}; margin-right: 6px; }}
         QComboBox:disabled {{ border: 1px solid {disabled_border}; color: {disabled_text}; }}
         QComboBox::down-arrow:disabled {{ border-top: 5px solid {disabled_border}; }}
-        QComboBox QAbstractItemView {{ background-color: {input_bg}; color: {text_hex}; selection-background-color: {accent_hex}; selection-color: {text_hex}; border: 1px solid {accent_hex}; outline: none; }}
+        QComboBox QAbstractItemView {{
+            background-color: {input_bg};
+            color: {text_hex};
+            selection-background-color: {accent_hex};
+            selection-color: {text_hex};
+            border: 1px solid {accent_hex};
+            outline: none;
+        }}
         
         QTabWidget::pane {{ border: none; }}
-        QTabBar::tab {{ background: transparent; padding: 8px 16px; border-bottom: 2px solid transparent; color: {text_hex}; margin-right: 2px; }}
-        QTabBar::tab:selected {{ border-bottom: 2px solid {accent_hex}; color: {accent_hex}; }}
-        QTabBar::tab:hover {{ background: rgba(255, 255, 255, 0.05); }}
+        QTabBar::tab {{
+            background: transparent;
+            padding: 9px 18px;
+            border-bottom: 2px solid transparent;
+            color: rgba({tr}, {tg}, {tb}, 170);
+            margin-right: 2px;
+            font-size: 13px;
+        }}
+        QTabBar::tab:selected {{
+            border-bottom: 2px solid {accent_hex};
+            color: {text_hex};
+        }}
+        QTabBar::tab:hover:!selected {{
+            background: rgba(255, 255, 255, 0.05);
+            color: {text_hex};
+            border-bottom: 2px solid rgba({ar}, {ag}, {ab}, 70);
+        }}
         
-        QTableWidget {{ background-color: {input_bg}; gridline-color: {accent_hex}; border: 1px solid {accent_hex}; border-radius: 6px; }}
-        QHeaderView::section {{ background-color: {btn_bg}; color: {text_hex}; border: none; padding: 4px; border-bottom: 1px solid {accent_hex}; }}
+        QTableWidget {{
+            background-color: {input_bg};
+            gridline-color: {accent_hex};
+            border: 1px solid rgba({ar}, {ag}, {ab}, 110);
+            border-radius: 8px;
+        }}
+        QHeaderView::section {{
+            background-color: {btn_bg};
+            color: {text_hex};
+            border: none;
+            padding: 5px;
+            border-bottom: 1px solid {accent_hex};
+            font-weight: bold;
+        }}
         QTableCornerButton::section {{ background-color: {btn_bg}; border: none; }}
         
-        QSlider::groove:horizontal {{ border: 1px solid {accent_hex}; height: 6px; background: {input_bg}; margin: 2px 0; border-radius: 3px; }}
-        QSlider::handle:horizontal {{ background: {accent_hex}; border: 1px solid {accent_hex}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
-        QSlider::groove:horizontal:disabled {{ border: 1px solid {disabled_border}; background: rgba(255,255,255,0.05); }}
+        QSlider::groove:horizontal {{
+            border: none;
+            height: 5px;
+            background: {input_bg};
+            margin: 2px 0;
+            border-radius: 3px;
+        }}
+        QSlider::handle:horizontal {{
+            background: {text_hex};
+            border: 2px solid {accent_hex};
+            width: 14px;
+            height: 14px;
+            margin: -6px 0;
+            border-radius: 9px;
+        }}
+        QSlider::sub-page:horizontal {{
+            background: {accent_hex};
+            border-radius: 3px;
+            height: 5px;
+        }}
+        QSlider::groove:horizontal:disabled {{ border: none; background: rgba(255,255,255,0.05); }}
         QSlider::handle:horizontal:disabled {{ background: {disabled_border}; border: 1px solid {disabled_border}; }}
+        QSlider::sub-page:horizontal:disabled {{ background: rgba(255,255,255,0.1); }}
 
-        QMenu {{ background-color: {popup_bg}; color: {text_hex}; border: 1px solid {accent_hex}; border-radius: 6px; padding: 5px; }}
-        QMenu::item {{ padding: 5px 20px; border-radius: 4px; }}
+        QMenu {{
+            background-color: {popup_bg};
+            color: {text_hex};
+            border: 1px solid {accent_hex};
+            border-radius: 8px;
+            padding: 6px;
+        }}
+        QMenu::item {{ padding: 6px 22px; border-radius: 5px; }}
         QMenu::item:selected {{ background-color: {accent_hex}; color: {text_hex}; }}
         
-        QToolTip {{ background-color: {popup_bg}; color: {text_hex}; border: 1px solid {accent_hex}; border-radius: 4px; padding: 4px; }}
+        QToolTip {{
+            background-color: {popup_bg};
+            color: {text_hex};
+            border: 1px solid {accent_hex};
+            border-radius: 6px;
+            padding: 5px;
+            font-size: 12px;
+        }}
+
+        QFrame#InfoCard {{
+            background-color: rgba({ar}, {ag}, {ab}, 18);
+            border: 1px solid rgba({ar}, {ag}, {ab}, 60);
+            border-radius: 8px;
+        }}
     """

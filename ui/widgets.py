@@ -1059,7 +1059,7 @@ class FontFamilyDelegate(QStyledItemDelegate):
             my_font = QFont(font_family)
             my_font.setPointSize(10) # Keep size consistent
             option.font = my_font
-        super().paint(painter, option, index)
+
 
 class FontStyleDelegate(QStyledItemDelegate):
     """
@@ -1238,7 +1238,7 @@ class PlayerControlsBar(QWidget):
                 f"  background: {pressed_bg};"
                 f"}}"
             )
-        super().paint(painter, option, index)
+
 
 # [ADD THIS CLASS AT THE END OF widgets.py]
 from PyQt5.QtWidgets import QTabBar, QStyle, QStylePainter, QStyleOptionTab

@@ -13,7 +13,7 @@ from requests import get
 # --- FIXED IMPORTS ---
 # QRectF, QPropertyAnimation, and QVariantAnimation moved to QtCore
 from PyQt5.QtCore import (
-    Qt, QTimer, QThreadPool, QSettings, QRect, QDateTime, pyqtSlot, QProcess, 
+    Qt, QTimer, QThreadPool, QRunnable, QSettings, QRect, QDateTime, pyqtSlot, QProcess, 
     pyqtProperty, QEasingCurve, QParallelAnimationGroup, QSequentialAnimationGroup,
     QEvent,
     QAbstractAnimation, QPoint, QRectF, QPropertyAnimation, QVariantAnimation, QStandardPaths
@@ -39,7 +39,7 @@ from config import (
 )
 from utils import resource_path
 from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, LyricsWorker, IS_WINDOWS
-from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, LyricsLabel
+from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, LyricsLabel, PlayerControlsBar
 from ui.playlist_panel import PlaylistPanel
 from ui.renderers import BackgroundRendererController
 from utils import get_best_text_color, get_best_border_color
@@ -242,8 +242,6 @@ class SpotifyPlayer(QMainWindow):
         self.default_text_border_enabled = False
         self.default_auto_border_enabled = False
         self.default_text_border_size = 3
-        self.track_transition_duration_ms = 800
-        self.track_transition_easing = "Out Cubic"
 
         self.container = None
         self.main_layout = None
@@ -255,9 +253,16 @@ class SpotifyPlayer(QMainWindow):
         self.progress_bar = None
         self.album_name = None # New: Album name label
         self.lyrics_label = None  # Lyrics: single synced line
+        self.player_controls_bar = None  # Optional playback controls row
         self.art_shadow = None
         self.title_shadow = None
         self.artist_shadow = None
+
+        # Playback state for controls bar
+        self._shuffle_state = False
+        self._repeat_mode = "off"   # 'off', 'context', 'track'
+        self._is_liked = False
+        self._controls_track_id = None  # track id whose liked state is cached
 
         # Lyrics state
         self._current_lyrics = []  # [(ms, text), ...]
@@ -291,6 +296,7 @@ class SpotifyPlayer(QMainWindow):
             self._check_for_first_run()
 
         self._setup_ui()
+        self._apply_controls_bar_settings()
         self._setup_background_renderer()
         self._apply_background_only_mode(self.background_only_mode, animate=False)
         self._load_saved_playlists()  # Load saved playlists before preloading new ones
@@ -941,6 +947,14 @@ class SpotifyPlayer(QMainWindow):
         saved_art_side = str(settings.value("player_art_side", "left")).strip().lower()
         self.player_art_side = "right" if saved_art_side == "right" else "left"
 
+        # Player controls bar settings
+        self.default_show_player_controls = as_bool(settings.value("default_show_player_controls"), False)
+        self.default_controls_play_pause  = as_bool(settings.value("default_controls_play_pause"),  True)
+        self.default_controls_shuffle     = as_bool(settings.value("default_controls_shuffle"),     True)
+        self.default_controls_repeat      = as_bool(settings.value("default_controls_repeat"),      True)
+        self.default_controls_add_playlist = as_bool(settings.value("default_controls_add_playlist"), True)
+        self.default_controls_liked       = as_bool(settings.value("default_controls_liked"),       True)
+
         # Recent Colors (JSON)
         recent_colors_str = settings.value("recent_colors", "[]")
         try:
@@ -1228,11 +1242,20 @@ class SpotifyPlayer(QMainWindow):
         # Keep visible so lyrics space is always reserved and layout does not jitter.
         self.lyrics_label.show()
 
+        # Player controls bar (below lyrics)
+        self.player_controls_bar = PlayerControlsBar()
+        self.player_controls_bar.play_pause_clicked.connect(self._action_play_pause)
+        self.player_controls_bar.shuffle_clicked.connect(self._action_shuffle)
+        self.player_controls_bar.repeat_clicked.connect(self._action_repeat)
+        self.player_controls_bar.add_playlist_clicked.connect(self._action_add_to_playlist)
+        self.player_controls_bar.liked_clicked.connect(self._action_liked)
+
         self.details_layout.addWidget(self.title)
         self.details_layout.insertWidget(1, self.album_name)
         self.details_layout.addWidget(self.artist)
         self.details_layout.addWidget(self.progress_bar)
         self.details_layout.addWidget(self.lyrics_label)
+        self.details_layout.addWidget(self.player_controls_bar, 0, Qt.AlignCenter)
 
         art_container_layout.addWidget(self.art, 0, Qt.AlignCenter)
 
@@ -2171,6 +2194,7 @@ class SpotifyPlayer(QMainWindow):
 
         # Aspect ratio is now set after the fade-out to prevent a jarring switch.
         self._load_track_data(data["item"], data["is_playing"], data["progress_ms"], aspect_ratio=1.0)
+        self._update_controls_bar_state(data)
 
     @pyqtSlot(str, list)
     def _on_lyrics_ready(self, track_id, lines):
@@ -2943,8 +2967,6 @@ class SpotifyPlayer(QMainWindow):
         if self.background_renderer:
             self.background_renderer.set_style_preset(self.lava_lamp_preset)
 
-        self._apply_track_transition_animation_settings()
-
         self._configure_media_workers()
         if self.active_media_source and not self._is_media_method_enabled(self.active_media_source):
             self.active_media_source = None
@@ -3343,8 +3365,21 @@ class SpotifyPlayer(QMainWindow):
     def _on_playback_state_changed(self, data):
         if not self._is_media_method_enabled('spotify'):
             return
-        self._sync_spotify_progress(data.get("progress_ms", 0), self._current_track_duration)
-        self._apply_spotify_playback_state(data.get("is_playing", False))
+        is_playing = data.get("is_playing", False)
+        self._last_progress_val = data.get("progress_ms", 0)
+        self._last_progress_sync_time = QDateTime.currentMSecsSinceEpoch()
+        
+        is_paused = not is_playing
+        if is_paused == self._is_paused:
+            return
+        self._is_paused = is_paused
+
+        # If Spotify starts playing (was paused, now playing) while we are viewing
+        # another media source, we should switch back to Spotify.
+        if is_playing and self.active_media_source != 'spotify' and self._last_spotify_track_data and self._is_media_method_enabled('spotify'):
+            # A spotify track exists and has just started playing. Re-assert it as the active source.
+            self._last_spotify_track_data['is_playing'] = True
+            self._on_spotify_track_changed(self._last_spotify_track_data)
         
     def setBgCrossfadeLerp(self, value):
         self._bg_crossfade_lerp = value
@@ -3394,6 +3429,8 @@ class SpotifyPlayer(QMainWindow):
             self.lyrics_label.setTextColor(text_with_alpha)
             self.lyrics_label.setGradient(title_gradient_enabled, title_gradient_color, title_gradient_direction)
             self.lyrics_label.setBorder(self._current_text_border_enabled, border_c, self._current_text_border_size)
+        if self.player_controls_bar:
+            self.player_controls_bar.set_text_color(text_with_alpha)
 
     def update_art_shadow_properties(self):
         if not self.art_shadow: return
@@ -3401,25 +3438,6 @@ class SpotifyPlayer(QMainWindow):
         self.art_shadow.setColor(QColor(0, 0, 0, 80))
         self.art_shadow.setOffset(0, 8)
         self.art_shadow.setEnabled(self.art._opacity > 0)
-
-    def _resolve_safe_font_family(self, family_name):
-        blocked_families = {
-            "Fixedsys",
-            "MS Sans Serif",
-            "MS Serif",
-            "Small Fonts",
-            "System",
-        }
-        db = QFontDatabase()
-        all_families = set(db.families())
-        candidate = str(family_name or "").strip()
-        if candidate and candidate not in blocked_families and candidate in all_families:
-            return candidate
-        if "Trebuchet MS" in all_families:
-            return "Trebuchet MS"
-        if "Segoe UI" in all_families:
-            return "Segoe UI"
-        return QFont().defaultFamily()
 
     def _update_text_properties(self):
         if not self.art or self.art.width() < 50: 

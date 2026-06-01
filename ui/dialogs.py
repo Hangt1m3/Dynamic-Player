@@ -1717,25 +1717,6 @@ class ColorEditorDialog(QDialog):
         self.default_progress_bar_checkbox.setChecked(self.initial_default_progress_bar_enabled)
         visual_effects_layout.addRow(self.default_progress_bar_checkbox)
 
-        self.track_transition_duration_slider = QSlider(Qt.Horizontal)
-        self.track_transition_duration_slider.setRange(250, 2200)
-        self.track_transition_duration_slider.setValue(self.initial_track_transition_duration_ms)
-        self.track_transition_duration_slider.setToolTip("Controls how long album art and detail fades take between tracks.")
-        self.track_transition_duration_label = self._create_dynamic_label(f"{self.initial_track_transition_duration_ms / 1000:.2f}s")
-        self.track_transition_duration_slider.valueChanged.connect(
-            lambda v: self.track_transition_duration_label.setText(f"{v / 1000:.2f}s")
-        )
-        transition_duration_layout = QHBoxLayout()
-        transition_duration_layout.addWidget(self.track_transition_duration_slider)
-        transition_duration_layout.addWidget(self.track_transition_duration_label)
-        visual_effects_layout.addRow(self._create_label("Track Transition Speed:"), transition_duration_layout)
-
-        self.track_transition_easing_combo = NoScrollComboBox()
-        self.track_transition_easing_combo.addItems(self.TRACK_TRANSITION_EASING_OPTIONS)
-        self.track_transition_easing_combo.setCurrentText(self.initial_track_transition_easing)
-        self.track_transition_easing_combo.setToolTip("Controls the easing curve used for track fade transitions.")
-        visual_effects_layout.addRow(self._create_label("Track Transition Curve:"), self.track_transition_easing_combo)
-
         # Layout & Window Behavior
         behavior_group = QGroupBox("Window & Layout")
         behavior_layout = QFormLayout(behavior_group)
@@ -4301,9 +4282,6 @@ class ColorEditorDialog(QDialog):
         check("default_progress_bar_enabled", "App Default: Show Progress Bar", self.default_progress_bar_checkbox.isChecked(), False, bool)
         check("default_text_border_enabled", "App Default: Show Text Outline", self.default_text_border_checkbox.isChecked(), False, bool)
         check("default_text_border_size", "App Default: Text Outline Size", self.default_text_border_size_slider.value(), 3, int)
-        check("track_transition_duration_ms", "Player: Track Transition Speed", self.track_transition_duration_slider.value(), 800, int)
-        check("track_transition_easing", "Player: Track Transition Curve", self.track_transition_easing_combo.currentText(), "Out Cubic")
-        check("auto_save_enabled", "Settings: Auto Save", self.auto_save_checkbox.isChecked(), False, bool)
 
         # Notifications
         check("notification_enabled", "Notifications: Enabled", self.notification_enabled_checkbox.isChecked(), False, bool)

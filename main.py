@@ -1278,6 +1278,24 @@ class SpotifyPlayer(QMainWindow):
         self._content_fade_anim.finished.connect(self._on_content_fade_finished)
         self._set_player_content_opacity(1.0)
 
+    def _apply_controls_bar_settings(self):
+        """Show/hide individual player control buttons based on saved settings."""
+        visible = set()
+        if getattr(self, 'default_controls_play_pause', True):
+            visible.add("play_pause")
+        if getattr(self, 'default_controls_shuffle', True):
+            visible.add("shuffle")
+        if getattr(self, 'default_controls_repeat', True):
+            visible.add("repeat")
+        if getattr(self, 'default_controls_add_playlist', True):
+            visible.add("add_playlist")
+        if getattr(self, 'default_controls_liked', True):
+            visible.add("liked")
+        show_bar = getattr(self, 'default_show_player_controls', False)
+        if not show_bar:
+            visible = set()
+        self.player_controls_bar.set_visible_buttons(visible)
+
     def _setup_background_renderer(self):
         self.background_renderer = BackgroundRendererController(self)
         self.background_renderer.set_style_preset("color_pop")

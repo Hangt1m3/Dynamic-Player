@@ -13,7 +13,7 @@ from requests import get
 # --- FIXED IMPORTS ---
 # QRectF, QPropertyAnimation, and QVariantAnimation moved to QtCore
 from PyQt5.QtCore import (
-    Qt, QTimer, QThreadPool, QSettings, QRect, QDateTime, pyqtSlot, QProcess, 
+    Qt, QTimer, QThreadPool, QRunnable, QSettings, QRect, QDateTime, pyqtSlot, QProcess, 
     pyqtProperty, QEasingCurve, QParallelAnimationGroup, QSequentialAnimationGroup,
     QEvent,
     QAbstractAnimation, QPoint, QRectF, QPropertyAnimation, QVariantAnimation, QStandardPaths
@@ -39,7 +39,7 @@ from config import (
 )
 from utils import resource_path
 from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, LyricsWorker, IS_WINDOWS
-from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, LyricsLabel
+from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, LyricsLabel, PlayerControlsBar
 from ui.playlist_panel import PlaylistPanel
 from ui.renderers import BackgroundRendererController
 from utils import get_best_text_color, get_best_border_color
@@ -226,6 +226,14 @@ class SpotifyPlayer(QMainWindow):
         self.default_auto_border_enabled = False
         self.default_text_border_size = 3
 
+        # Player controls bar defaults (loaded from settings)
+        self.default_show_player_controls = False
+        self.default_controls_play_pause = True
+        self.default_controls_shuffle = True
+        self.default_controls_repeat = True
+        self.default_controls_add_playlist = True
+        self.default_controls_liked = True
+
         self.container = None
         self.main_layout = None
         self.art_container = None
@@ -236,9 +244,16 @@ class SpotifyPlayer(QMainWindow):
         self.progress_bar = None
         self.album_name = None # New: Album name label
         self.lyrics_label = None  # Lyrics: single synced line
+        self.player_controls_bar = None  # Optional playback controls row
         self.art_shadow = None
         self.title_shadow = None
         self.artist_shadow = None
+
+        # Playback state for controls bar
+        self._shuffle_state = False
+        self._repeat_mode = "off"   # 'off', 'context', 'track'
+        self._is_liked = False
+        self._controls_track_id = None  # track id whose liked state is cached
 
         # Lyrics state
         self._current_lyrics = []  # [(ms, text), ...]
@@ -272,6 +287,7 @@ class SpotifyPlayer(QMainWindow):
             self._check_for_first_run()
 
         self._setup_ui()
+        self._apply_controls_bar_settings()
         self._setup_background_renderer()
         self._apply_background_only_mode(self.background_only_mode, animate=False)
         self._load_saved_playlists()  # Load saved playlists before preloading new ones
@@ -872,6 +888,14 @@ class SpotifyPlayer(QMainWindow):
         saved_art_side = str(settings.value("player_art_side", "left")).strip().lower()
         self.player_art_side = "right" if saved_art_side == "right" else "left"
 
+        # Player controls bar settings
+        self.default_show_player_controls = as_bool(settings.value("default_show_player_controls"), False)
+        self.default_controls_play_pause  = as_bool(settings.value("default_controls_play_pause"),  True)
+        self.default_controls_shuffle     = as_bool(settings.value("default_controls_shuffle"),     True)
+        self.default_controls_repeat      = as_bool(settings.value("default_controls_repeat"),      True)
+        self.default_controls_add_playlist = as_bool(settings.value("default_controls_add_playlist"), True)
+        self.default_controls_liked       = as_bool(settings.value("default_controls_liked"),       True)
+
         # Recent Colors (JSON)
         recent_colors_str = settings.value("recent_colors", "[]")
         try:
@@ -1157,11 +1181,20 @@ class SpotifyPlayer(QMainWindow):
         # Keep visible so lyrics space is always reserved and layout does not jitter.
         self.lyrics_label.show()
 
+        # Player controls bar (below lyrics)
+        self.player_controls_bar = PlayerControlsBar()
+        self.player_controls_bar.play_pause_clicked.connect(self._action_play_pause)
+        self.player_controls_bar.shuffle_clicked.connect(self._action_shuffle)
+        self.player_controls_bar.repeat_clicked.connect(self._action_repeat)
+        self.player_controls_bar.add_playlist_clicked.connect(self._action_add_to_playlist)
+        self.player_controls_bar.liked_clicked.connect(self._action_liked)
+
         self.details_layout.addWidget(self.title)
         self.details_layout.insertWidget(1, self.album_name)
         self.details_layout.addWidget(self.artist)
         self.details_layout.addWidget(self.progress_bar)
         self.details_layout.addWidget(self.lyrics_label)
+        self.details_layout.addWidget(self.player_controls_bar, 0, Qt.AlignCenter)
 
         art_container_layout.addWidget(self.art)
 
@@ -1989,6 +2022,7 @@ class SpotifyPlayer(QMainWindow):
 
         # Aspect ratio is now set after the fade-out to prevent a jarring switch.
         self._load_track_data(data["item"], data["is_playing"], data["progress_ms"], aspect_ratio=1.0)
+        self._update_controls_bar_state(data)
 
     @pyqtSlot(str, list)
     def _on_lyrics_ready(self, track_id, lines):
@@ -2711,6 +2745,17 @@ class SpotifyPlayer(QMainWindow):
         if self.background_renderer:
             self.background_renderer.set_style_preset(self.lava_lamp_preset)
 
+        # Reload player controls bar settings
+        def _b(key, default):
+            return str(settings.value(key, "true" if default else "false")).lower() == "true"
+        self.default_show_player_controls  = _b("default_show_player_controls",  False)
+        self.default_controls_play_pause   = _b("default_controls_play_pause",   True)
+        self.default_controls_shuffle      = _b("default_controls_shuffle",      True)
+        self.default_controls_repeat       = _b("default_controls_repeat",       True)
+        self.default_controls_add_playlist = _b("default_controls_add_playlist", True)
+        self.default_controls_liked        = _b("default_controls_liked",        True)
+        self._apply_controls_bar_settings()
+
         self._configure_media_workers()
         if self.active_media_source and not self._is_media_method_enabled(self.active_media_source):
             self.active_media_source = None
@@ -3084,9 +3129,19 @@ class SpotifyPlayer(QMainWindow):
         self._last_progress_sync_time = QDateTime.currentMSecsSinceEpoch()
         
         is_paused = not is_playing
-        if is_paused == self._is_paused:
-            return
+        prev_paused = self._is_paused
         self._is_paused = is_paused
+
+        # Update shuffle/repeat state even if paused state hasn't changed
+        self._shuffle_state = data.get("shuffle_state", self._shuffle_state)
+        self._repeat_mode   = data.get("repeat_state",  self._repeat_mode)
+        if self.player_controls_bar and self.player_controls_bar.isVisible():
+            self.player_controls_bar.set_is_playing(is_playing)
+            self.player_controls_bar.set_shuffle(self._shuffle_state)
+            self.player_controls_bar.set_repeat_mode(self._repeat_mode)
+
+        if is_paused == prev_paused:
+            return
 
         # If Spotify starts playing (was paused, now playing) while we are viewing
         # another media source, we should switch back to Spotify.
@@ -3142,6 +3197,8 @@ class SpotifyPlayer(QMainWindow):
         if self.lyrics_label:
             self.lyrics_label.setTextColor(text_with_alpha)
             self.lyrics_label.setBorder(self._current_text_border_enabled, border_c, self._current_text_border_size)
+        if self.player_controls_bar:
+            self.player_controls_bar.set_text_color(text_with_alpha)
 
     def update_art_shadow_properties(self):
         if not self.art_shadow: return
@@ -3149,6 +3206,174 @@ class SpotifyPlayer(QMainWindow):
         self.art_shadow.setColor(QColor(0, 0, 0, 80))
         self.art_shadow.setOffset(0, 8)
         self.art_shadow.setEnabled(self.art._opacity > 0)
+
+    # ------------------------------------------------------------------ #
+    # Player controls bar                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _apply_controls_bar_settings(self):
+        """Show/hide the controls bar and its individual buttons based on settings."""
+        if not self.player_controls_bar:
+            return
+        if not self.default_show_player_controls:
+            self.player_controls_bar.setVisible(False)
+            return
+        visible = set()
+        if self.default_controls_play_pause:   visible.add("play_pause")
+        if self.default_controls_shuffle:      visible.add("shuffle")
+        if self.default_controls_repeat:       visible.add("repeat")
+        if self.default_controls_add_playlist: visible.add("add_playlist")
+        if self.default_controls_liked:        visible.add("liked")
+        self.player_controls_bar.set_visible_buttons(visible)
+
+    def _update_controls_bar_state(self, data):
+        """Sync button visual states (is_playing, shuffle, repeat, liked) from playback data."""
+        if not self.player_controls_bar or not self.player_controls_bar.isVisible():
+            return
+        self.player_controls_bar.set_is_playing(data.get("is_playing", False))
+        shuffle = data.get("shuffle_state", False)
+        if shuffle != self._shuffle_state:
+            self._shuffle_state = shuffle
+        self.player_controls_bar.set_shuffle(self._shuffle_state)
+        repeat = data.get("repeat_state", "off")
+        if repeat != self._repeat_mode:
+            self._repeat_mode = repeat
+        self.player_controls_bar.set_repeat_mode(self._repeat_mode)
+        # Refresh liked state if the track changed
+        track_id = (data.get("item") or {}).get("id")
+        if track_id and track_id != self._controls_track_id:
+            self._controls_track_id = track_id
+            self._fetch_liked_state(track_id)
+
+    def _fetch_liked_state(self, track_id):
+        """Check whether the current track is saved in the user's library (async)."""
+        if not self.sp or not track_id:
+            return
+        sp = self.sp
+        bar = self.player_controls_bar
+
+        class _LikedCheckWorker(QRunnable):
+            class Sig(QObject):
+                done = pyqtSignal(bool)
+            def __init__(self, sp, tid):
+                super().__init__()
+                self.sp = sp
+                self.tid = tid
+                self.signals = self.Sig()
+            @pyqtSlot()
+            def run(self):
+                try:
+                    result = self.sp.current_user_saved_tracks_contains([self.tid])
+                    self.signals.done.emit(bool(result and result[0]))
+                except Exception:
+                    self.signals.done.emit(False)
+
+        worker = _LikedCheckWorker(sp, track_id)
+        worker.signals.done.connect(lambda liked: self._on_liked_state_fetched(liked, track_id))
+        self.threadpool.start(worker)
+
+    def _on_liked_state_fetched(self, liked: bool, track_id: str):
+        if track_id != self._controls_track_id:
+            return  # stale response
+        self._is_liked = liked
+        if self.player_controls_bar:
+            self.player_controls_bar.set_liked(liked)
+
+    # -- Action handlers (run API calls in background) --
+
+    def _run_spotify_action(self, fn):
+        """Run a callable *fn(sp)* on a background thread, ignoring errors."""
+        if not self.sp:
+            return
+        sp = self.sp
+
+        class _W(QRunnable):
+            def __init__(self, sp, fn): super().__init__(); self._sp = sp; self._fn = fn
+            @pyqtSlot()
+            def run(self):
+                try: self._fn(self._sp)
+                except Exception as e: print(f"[Controls] Spotify action error: {e}")
+
+        self.threadpool.start(_W(sp, fn))
+
+    def _action_play_pause(self):
+        if self.active_media_source != 'spotify':
+            return
+        is_playing = not self._is_paused
+        if is_playing:
+            self._run_spotify_action(lambda sp: sp.pause_playback())
+        else:
+            self._run_spotify_action(lambda sp: sp.start_playback())
+        # Optimistic UI update
+        self._is_paused = is_playing
+        if self.player_controls_bar:
+            self.player_controls_bar.set_is_playing(not is_playing)
+
+    def _action_shuffle(self):
+        if self.active_media_source != 'spotify':
+            return
+        new_state = not self._shuffle_state
+        self._shuffle_state = new_state
+        if self.player_controls_bar:
+            self.player_controls_bar.set_shuffle(new_state)
+        self._run_spotify_action(lambda sp: sp.shuffle(new_state))
+
+    def _action_repeat(self):
+        if self.active_media_source != 'spotify':
+            return
+        cycle = {"off": "context", "context": "track", "track": "off"}
+        new_mode = cycle.get(self._repeat_mode, "off")
+        self._repeat_mode = new_mode
+        if self.player_controls_bar:
+            self.player_controls_bar.set_repeat_mode(new_mode)
+        self._run_spotify_action(lambda sp: sp.repeat(new_mode))
+
+    def _action_liked(self):
+        if not self.sp or not self._controls_track_id:
+            return
+        track_id = self._controls_track_id
+        if self._is_liked:
+            self._is_liked = False
+            if self.player_controls_bar:
+                self.player_controls_bar.set_liked(False)
+            self._run_spotify_action(lambda sp: sp.current_user_saved_tracks_delete([track_id]))
+        else:
+            self._is_liked = True
+            if self.player_controls_bar:
+                self.player_controls_bar.set_liked(True)
+            self._run_spotify_action(lambda sp: sp.current_user_saved_tracks_add([track_id]))
+
+    def _action_add_to_playlist(self):
+        """Show a small dialog to pick a playlist, then add the current track."""
+        if not self.sp or not self._controls_track_id:
+            return
+        track_id = self._controls_track_id
+        playlists = self._user_playlists or []
+        if not playlists:
+            try:
+                playlists = self._get_user_playlists()
+            except Exception:
+                playlists = []
+        spotify_playlists = [p for p in playlists if p.get("source") == "spotify"]
+        if not spotify_playlists:
+            return
+
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background: #1e1e1e; color: white; border: 1px solid #444; border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 18px; border-radius: 4px; }"
+            "QMenu::item:selected { background: rgba(255,255,255,40); }"
+        )
+        for pl in spotify_playlists[:30]:
+            action = menu.addAction(pl["name"])
+            action.setData(pl["id"])
+        chosen = menu.exec_(self.player_controls_bar.mapToGlobal(
+            self.player_controls_bar.rect().center()))
+        if chosen and chosen.data():
+            pl_id = chosen.data()
+            track_uri = f"spotify:track:{track_id}"
+            self._run_spotify_action(lambda sp: sp.playlist_add_items(pl_id, [track_uri]))
 
     def _update_text_properties(self):
         if not self.art or self.art.width() < 50: 

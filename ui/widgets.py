@@ -1017,6 +1017,155 @@ class FontStyleDelegate(QStyledItemDelegate):
                  option.font.setFamily(current_family)
                  if "Bold" in style_name: option.font.setBold(True)
                  if "Italic" in style_name: option.font.setItalic(True)
+
+
+class PlayerControlsBar(QWidget):
+    """A row of optional playback control buttons rendered below the lyrics area.
+
+    Available buttons (all individually configurable via settings):
+        • play_pause   – toggle playback
+        • shuffle      – toggle shuffle
+        • repeat       – cycle repeat mode (off → context → track)
+        • add_playlist – add current track to a playlist
+        • liked        – toggle liked / heart status
+
+    Signals are emitted so the main window can perform the actual API calls.
+    """
+
+    play_pause_clicked   = pyqtSignal()
+    shuffle_clicked      = pyqtSignal()
+    repeat_clicked       = pyqtSignal()
+    add_playlist_clicked = pyqtSignal()
+    liked_clicked        = pyqtSignal()
+
+    # Button ids in display order
+    BUTTON_ORDER = ["play_pause", "shuffle", "repeat", "add_playlist", "liked"]
+
+    # (normal icon, active icon, tooltip)
+    BUTTON_META = {
+        "play_pause":   ("▶",  "⏸",  "Play / Pause"),
+        "shuffle":      ("⇄",  "⇄",  "Toggle Shuffle"),
+        "repeat":       ("↻",  "↻",  "Cycle Repeat"),
+        "add_playlist": ("＋", "＋", "Add to Playlist"),
+        "liked":        ("♡",  "♥",  "Add to Liked Songs"),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(44)
+
+        self._text_color = QColor(255, 255, 255)
+        self._active_states: dict = {k: False for k in self.BUTTON_ORDER}
+        self._repeat_mode = "off"  # 'off', 'context', 'track'
+        self._visible_buttons: set = set(self.BUTTON_ORDER)
+
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(8)
+        self._layout.addStretch()
+
+        self._buttons: dict = {}
+        for key in self.BUTTON_ORDER:
+            btn = QPushButton(self.BUTTON_META[key][0])
+            btn.setFixedSize(40, 36)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setToolTip(self.BUTTON_META[key][2])
+            btn.setObjectName(f"pcb_{key}")
+            self._layout.addWidget(btn)
+            self._buttons[key] = btn
+
+        self._layout.addStretch()
+
+        self._buttons["play_pause"].clicked.connect(self.play_pause_clicked)
+        self._buttons["shuffle"].clicked.connect(self.shuffle_clicked)
+        self._buttons["repeat"].clicked.connect(self.repeat_clicked)
+        self._buttons["add_playlist"].clicked.connect(self.add_playlist_clicked)
+        self._buttons["liked"].clicked.connect(self.liked_clicked)
+
+        self._apply_styles()
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    def set_visible_buttons(self, buttons: set):
+        """Show only the buttons in *buttons* (subset of BUTTON_ORDER)."""
+        self._visible_buttons = set(buttons)
+        for key, btn in self._buttons.items():
+            btn.setVisible(key in self._visible_buttons)
+        # Hide the whole bar if no buttons are enabled
+        any_visible = bool(self._visible_buttons)
+        self.setVisible(any_visible)
+
+    def set_text_color(self, color: QColor):
+        self._text_color = color
+        self._apply_styles()
+
+    def set_is_playing(self, playing: bool):
+        self._active_states["play_pause"] = playing
+        self._update_button_icon("play_pause")
+        self._apply_styles()
+
+    def set_shuffle(self, enabled: bool):
+        self._active_states["shuffle"] = enabled
+        self._apply_styles()
+
+    def set_repeat_mode(self, mode: str):
+        """mode: 'off', 'context', or 'track'"""
+        self._repeat_mode = mode
+        self._active_states["repeat"] = (mode != "off")
+        repeat_icons = {"off": "↻", "context": "↻", "track": "↺"}
+        icon = repeat_icons.get(mode, "↻")
+        self._buttons["repeat"].setText(icon)
+        self._apply_styles()
+
+    def set_liked(self, liked: bool):
+        self._active_states["liked"] = liked
+        self._update_button_icon("liked")
+        self._apply_styles()
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _update_button_icon(self, key: str):
+        is_active = self._active_states.get(key, False)
+        icon = self.BUTTON_META[key][1] if is_active else self.BUTTON_META[key][0]
+        self._buttons[key].setText(icon)
+
+    def _apply_styles(self):
+        base_r = self._text_color.red()
+        base_g = self._text_color.green()
+        base_b = self._text_color.blue()
+        base_a = self._text_color.alpha()
+        normal_color   = f"rgba({base_r},{base_g},{base_b},{base_a})"
+        # Active: slightly brighter / more opaque
+        active_color   = f"rgba({min(255,base_r+30)},{min(255,base_g+30)},{min(255,base_b+30)},255)"
+        hover_bg       = f"rgba({base_r},{base_g},{base_b},40)"
+        pressed_bg     = f"rgba({base_r},{base_g},{base_b},70)"
+
+        for key, btn in self._buttons.items():
+            is_active = self._active_states.get(key, False)
+            fg = active_color if is_active else normal_color
+            btn.setStyleSheet(
+                f"QPushButton#{btn.objectName()} {{"
+                f"  background: transparent;"
+                f"  border: none;"
+                f"  border-radius: 8px;"
+                f"  font-size: 18px;"
+                f"  color: {fg};"
+                f"}}"
+                f"QPushButton#{btn.objectName()}:hover {{"
+                f"  background: {hover_bg};"
+                f"}}"
+                f"QPushButton#{btn.objectName()}:pressed {{"
+                f"  background: {pressed_bg};"
+                f"}}"
+            )
         super().paint(painter, option, index)
 
 # [ADD THIS CLASS AT THE END OF widgets.py]

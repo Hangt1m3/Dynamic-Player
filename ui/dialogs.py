@@ -1072,6 +1072,46 @@ class ColorEditorDialog(QDialog):
         self.default_progress_bar_checkbox.setChecked(self.initial_default_progress_bar_enabled)
         visual_effects_layout.addRow(self.default_progress_bar_checkbox)
 
+        # Player Controls Bar
+        controls_bar_group = QGroupBox("Player Controls Bar")
+        controls_bar_layout = QFormLayout(controls_bar_group)
+        controls_bar_layout.setSpacing(10)
+        global_layout.addWidget(controls_bar_group)
+
+        self.default_show_player_controls_checkbox = QCheckBox("Show Controls Bar Below Lyrics")
+        self.default_show_player_controls_checkbox.setChecked(
+            settings.value("default_show_player_controls", "false") == "true"
+        )
+        self.default_show_player_controls_checkbox.setToolTip(
+            "Show an optional row of playback buttons below the lyrics area."
+        )
+        controls_bar_layout.addRow(self.default_show_player_controls_checkbox)
+
+        def _mk_ctrl_cb(key, label, default=True):
+            cb = QCheckBox(label)
+            cb.setChecked(settings.value(key, "true" if default else "false") == "true")
+            return cb
+
+        self.default_controls_play_pause_cb   = _mk_ctrl_cb("default_controls_play_pause",   "  ▶  Play / Pause")
+        self.default_controls_shuffle_cb      = _mk_ctrl_cb("default_controls_shuffle",      "  ⇄  Shuffle")
+        self.default_controls_repeat_cb       = _mk_ctrl_cb("default_controls_repeat",       "  ↻  Repeat")
+        self.default_controls_add_playlist_cb = _mk_ctrl_cb("default_controls_add_playlist", "  ＋  Add to Playlist")
+        self.default_controls_liked_cb        = _mk_ctrl_cb("default_controls_liked",        "  ♡  Add to Liked Songs")
+
+        for cb in (self.default_controls_play_pause_cb, self.default_controls_shuffle_cb,
+                   self.default_controls_repeat_cb, self.default_controls_add_playlist_cb,
+                   self.default_controls_liked_cb):
+            cb.setEnabled(self.default_show_player_controls_checkbox.isChecked())
+            controls_bar_layout.addRow(cb)
+
+        def _on_controls_master_toggled(checked):
+            for cb in (self.default_controls_play_pause_cb, self.default_controls_shuffle_cb,
+                       self.default_controls_repeat_cb, self.default_controls_add_playlist_cb,
+                       self.default_controls_liked_cb):
+                cb.setEnabled(checked)
+
+        self.default_show_player_controls_checkbox.toggled.connect(_on_controls_master_toggled)
+
         # Layout & Window Behavior
         behavior_group = QGroupBox("Window & Layout")
         behavior_layout = QFormLayout(behavior_group)
@@ -3625,6 +3665,14 @@ class ColorEditorDialog(QDialog):
         check("default_progress_bar_enabled", "App Default: Show Progress Bar", self.default_progress_bar_checkbox.isChecked(), False, bool)
         check("default_text_border_enabled", "App Default: Show Text Outline", self.default_text_border_checkbox.isChecked(), False, bool)
         check("default_text_border_size", "App Default: Text Outline Size", self.default_text_border_size_slider.value(), 3, int)
+
+        # Player Controls Bar
+        check("default_show_player_controls",  "Controls Bar: Show", self.default_show_player_controls_checkbox.isChecked(), False, bool)
+        check("default_controls_play_pause",   "Controls Bar: Play/Pause", self.default_controls_play_pause_cb.isChecked(), True, bool)
+        check("default_controls_shuffle",      "Controls Bar: Shuffle", self.default_controls_shuffle_cb.isChecked(), True, bool)
+        check("default_controls_repeat",       "Controls Bar: Repeat", self.default_controls_repeat_cb.isChecked(), True, bool)
+        check("default_controls_add_playlist", "Controls Bar: Add to Playlist", self.default_controls_add_playlist_cb.isChecked(), True, bool)
+        check("default_controls_liked",        "Controls Bar: Liked Songs", self.default_controls_liked_cb.isChecked(), True, bool)
 
         # Notifications
         check("notification_enabled", "Notifications: Enabled", self.notification_enabled_checkbox.isChecked(), False, bool)

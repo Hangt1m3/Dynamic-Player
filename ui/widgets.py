@@ -1126,7 +1126,7 @@ class PlayerControlsBar(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.setFixedHeight(44)
 
         self._text_color = QColor(255, 255, 255)
@@ -1172,6 +1172,15 @@ class PlayerControlsBar(QWidget):
         # Hide the whole bar if no buttons are enabled
         any_visible = bool(self._visible_buttons)
         self.setVisible(any_visible)
+        self.updateGeometry()
+
+    def sizeHint(self):
+        n = len([k for k in self._visible_buttons if k in self._buttons])
+        if n == 0:
+            return super().sizeHint()
+        btn_w, spacing, h_pad = 40, 8, 12
+        width = n * btn_w + max(0, n - 1) * spacing + h_pad * 2
+        return QSize(width, 44)
 
     def set_text_color(self, color: QColor):
         self._text_color = color

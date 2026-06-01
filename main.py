@@ -3473,6 +3473,8 @@ class SpotifyPlayer(QMainWindow):
             details_layout.setAlignment(self.progress_bar, Qt.AlignHCenter)
             if self.lyrics_label:
                 details_layout.setAlignment(self.lyrics_label, Qt.AlignHCenter)
+            if self.player_controls_bar:
+                details_layout.setAlignment(self.player_controls_bar, Qt.AlignHCenter)
         else:
             self.main_layout.addStretch(1)
             if self.player_art_side == "right":
@@ -3487,6 +3489,8 @@ class SpotifyPlayer(QMainWindow):
             details_layout.addWidget(self.progress_bar, 0, Qt.AlignHCenter)
             if self.lyrics_label:
                 details_layout.setAlignment(self.lyrics_label, Qt.AlignHCenter)
+            if self.player_controls_bar:
+                details_layout.setAlignment(self.player_controls_bar, Qt.AlignHCenter)
             self.main_layout.addStretch(1)
 
         self.details_widget.setContentsMargins(20 if is_vertical else 40, 0, 20, 0)

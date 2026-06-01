@@ -3077,12 +3077,12 @@ class SpotifyPlayer(QMainWindow):
         self.default_progress_bar_enabled = settings.value("default_progress_bar_enabled", "false") == "true"
         self.default_text_border_enabled = settings.value("default_text_border_enabled", "false") == "true"
         self.default_text_border_size = int(settings.value("default_text_border_size", 3))
-        self.default_show_player_controls = as_bool(settings.value("default_show_player_controls"), False)
-        self.default_controls_play_pause  = as_bool(settings.value("default_controls_play_pause"),  True)
-        self.default_controls_shuffle     = as_bool(settings.value("default_controls_shuffle"),     True)
-        self.default_controls_repeat      = as_bool(settings.value("default_controls_repeat"),      True)
-        self.default_controls_add_playlist= as_bool(settings.value("default_controls_add_playlist"),True)
-        self.default_controls_liked       = as_bool(settings.value("default_controls_liked"),       True)
+        self.default_show_player_controls = str(settings.value("default_show_player_controls", "false")).lower() == "true"
+        self.default_controls_play_pause  = str(settings.value("default_controls_play_pause",  "true")).lower() == "true"
+        self.default_controls_shuffle     = str(settings.value("default_controls_shuffle",     "true")).lower() == "true"
+        self.default_controls_repeat      = str(settings.value("default_controls_repeat",      "true")).lower() == "true"
+        self.default_controls_add_playlist= str(settings.value("default_controls_add_playlist","true")).lower() == "true"
+        self.default_controls_liked       = str(settings.value("default_controls_liked",       "true")).lower() == "true"
         self._apply_controls_bar_settings()
         self.track_transition_duration_ms = int(max(250, min(2200, int(settings.value("track_transition_duration_ms", 800)))))
         self.track_transition_easing = str(settings.value("track_transition_easing", "Out Cubic") or "Out Cubic")

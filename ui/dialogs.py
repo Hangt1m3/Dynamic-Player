@@ -664,6 +664,12 @@ class ColorEditorDialog(QDialog):
         self.theme_library_grid = None
         self.theme_library_content = None
         self.initial_default_progress_bar_enabled = settings.value("default_progress_bar_enabled", "false") == "true"
+        self.initial_default_show_player_controls = settings.value("default_show_player_controls", "false") == "true"
+        self.initial_default_controls_play_pause  = settings.value("default_controls_play_pause",  "true") == "true"
+        self.initial_default_controls_shuffle     = settings.value("default_controls_shuffle",     "true") == "true"
+        self.initial_default_controls_repeat      = settings.value("default_controls_repeat",      "true") == "true"
+        self.initial_default_controls_add_playlist= settings.value("default_controls_add_playlist","true") == "true"
+        self.initial_default_controls_liked       = settings.value("default_controls_liked",       "true") == "true"
         self.initial_default_text_border_size = int(settings.value("default_text_border_size", 3))
         self.initial_track_transition_duration_ms = int(settings.value("track_transition_duration_ms", 800))
         self.initial_track_transition_duration_ms = max(250, min(2200, self.initial_track_transition_duration_ms))
@@ -1716,6 +1722,41 @@ class ColorEditorDialog(QDialog):
         self.default_progress_bar_checkbox = QCheckBox("Show Progress Bar by Default")
         self.default_progress_bar_checkbox.setChecked(self.initial_default_progress_bar_enabled)
         visual_effects_layout.addRow(self.default_progress_bar_checkbox)
+
+        # Player Controls Bar
+        controls_group = QGroupBox("Player Controls Bar")
+        controls_layout = QFormLayout(controls_group)
+        controls_layout.setSpacing(10)
+        global_layout.addWidget(controls_group)
+
+        self.default_show_player_controls_checkbox = QCheckBox("Show Player Controls Bar")
+        self.default_show_player_controls_checkbox.setChecked(self.initial_default_show_player_controls)
+        controls_layout.addRow(self.default_show_player_controls_checkbox)
+
+        self.default_controls_play_pause_checkbox = QCheckBox("Play / Pause")
+        self.default_controls_play_pause_checkbox.setChecked(self.initial_default_controls_play_pause)
+        self.default_controls_shuffle_checkbox = QCheckBox("Shuffle")
+        self.default_controls_shuffle_checkbox.setChecked(self.initial_default_controls_shuffle)
+        self.default_controls_repeat_checkbox = QCheckBox("Repeat")
+        self.default_controls_repeat_checkbox.setChecked(self.initial_default_controls_repeat)
+        self.default_controls_add_playlist_checkbox = QCheckBox("Add to Playlist")
+        self.default_controls_add_playlist_checkbox.setChecked(self.initial_default_controls_add_playlist)
+        self.default_controls_liked_checkbox = QCheckBox("Liked / Heart")
+        self.default_controls_liked_checkbox.setChecked(self.initial_default_controls_liked)
+
+        controls_layout.addRow(self._create_label("Visible Buttons:"), self.default_controls_play_pause_checkbox)
+        controls_layout.addRow("", self.default_controls_shuffle_checkbox)
+        controls_layout.addRow("", self.default_controls_repeat_checkbox)
+        controls_layout.addRow("", self.default_controls_add_playlist_checkbox)
+        controls_layout.addRow("", self.default_controls_liked_checkbox)
+
+        def _update_controls_checkboxes(enabled):
+            for cb in [self.default_controls_play_pause_checkbox, self.default_controls_shuffle_checkbox,
+                       self.default_controls_repeat_checkbox, self.default_controls_add_playlist_checkbox,
+                       self.default_controls_liked_checkbox]:
+                cb.setEnabled(enabled)
+        _update_controls_checkboxes(self.initial_default_show_player_controls)
+        self.default_show_player_controls_checkbox.toggled.connect(_update_controls_checkboxes)
 
         # Layout & Window Behavior
         behavior_group = QGroupBox("Window & Layout")
@@ -4282,6 +4323,12 @@ class ColorEditorDialog(QDialog):
         check("default_progress_bar_enabled", "App Default: Show Progress Bar", self.default_progress_bar_checkbox.isChecked(), False, bool)
         check("default_text_border_enabled", "App Default: Show Text Outline", self.default_text_border_checkbox.isChecked(), False, bool)
         check("default_text_border_size", "App Default: Text Outline Size", self.default_text_border_size_slider.value(), 3, int)
+        check("default_show_player_controls",   "App Default: Show Controls Bar",   self.default_show_player_controls_checkbox.isChecked(),   False, bool)
+        check("default_controls_play_pause",    "App Default: Controls Play/Pause", self.default_controls_play_pause_checkbox.isChecked(),    True,  bool)
+        check("default_controls_shuffle",       "App Default: Controls Shuffle",    self.default_controls_shuffle_checkbox.isChecked(),       True,  bool)
+        check("default_controls_repeat",        "App Default: Controls Repeat",     self.default_controls_repeat_checkbox.isChecked(),        True,  bool)
+        check("default_controls_add_playlist",  "App Default: Controls Add Playlist",self.default_controls_add_playlist_checkbox.isChecked(), True,  bool)
+        check("default_controls_liked",         "App Default: Controls Liked",      self.default_controls_liked_checkbox.isChecked(),         True,  bool)
 
         # Notifications
         check("notification_enabled", "Notifications: Enabled", self.notification_enabled_checkbox.isChecked(), False, bool)

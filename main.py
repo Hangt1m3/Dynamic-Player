@@ -1894,6 +1894,36 @@ class SpotifyPlayer(QMainWindow):
             self._last_spotify_track_data['is_playing'] = True
             self._on_spotify_track_changed(self._last_spotify_track_data)
 
+    def _update_controls_bar_state(self, data: dict):
+        """Sync controls bar button states from a Spotify playback data dict."""
+        if not hasattr(self, 'player_controls_bar'):
+            return
+        is_playing = bool(data.get("is_playing", False))
+        self.player_controls_bar.set_is_playing(is_playing)
+
+        shuffle = bool(data.get("shuffle_state", False))
+        self._shuffle_state = shuffle
+        self.player_controls_bar.set_shuffle(shuffle)
+
+        repeat_raw = data.get("repeat_state", "off")
+        repeat_map = {"off": "off", "context": "context", "track": "track"}
+        repeat_mode = repeat_map.get(repeat_raw, "off")
+        self._repeat_mode = repeat_mode
+        self.player_controls_bar.set_repeat_mode(repeat_mode)
+
+        # Liked state: check asynchronously to avoid blocking the UI thread
+        track_id = (data.get("item") or {}).get("id")
+        if track_id and self.sp and track_id != self._controls_track_id:
+            self._controls_track_id = track_id
+            try:
+                sp = self._get_spotify_client()
+                results = sp.current_user_saved_tracks_contains([track_id])
+                liked = bool(results[0]) if results else False
+                self._is_liked = liked
+                self.player_controls_bar.set_liked(liked)
+            except Exception as e:
+                print(f"Error checking liked state: {e}")
+
     def _action_play_pause(self):
         if not self.sp:
             return

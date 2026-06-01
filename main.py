@@ -3534,6 +3534,19 @@ class SpotifyPlayer(QMainWindow):
         self.art_shadow.setOffset(0, 8)
         self.art_shadow.setEnabled(self.art._opacity > 0)
 
+    def _resolve_safe_font_family(self, family: str) -> str:
+        """Return *family* if available on this system, otherwise fall back to a safe default."""
+        if not family:
+            return "Trebuchet MS"
+        available = QFontDatabase().families()
+        if family in available:
+            return family
+        fallbacks = ["Trebuchet MS", "Segoe UI", "Arial", "Sans Serif"]
+        for fb in fallbacks:
+            if fb in available:
+                return fb
+        return fallbacks[0]
+
     def _update_text_properties(self):
         if not self.art or self.art.width() < 50: 
             return

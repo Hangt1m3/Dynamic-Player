@@ -5,7 +5,8 @@ import numpy as np
 from PyQt5.QtCore import (Qt, pyqtProperty, pyqtSignal, QObject, QPointF, QRectF, QSize, 
                           QPropertyAnimation, QEasingCurve, QTimer, QParallelAnimationGroup, QRect, QEvent)
 from PyQt5.QtWidgets import (QLabel, QProgressBar, QGraphicsOpacityEffect, QSizePolicy, QWidget, 
-                             QPushButton, QComboBox, QGroupBox, QCheckBox, QRadioButton, QAbstractButton)
+                             QPushButton, QComboBox, QGroupBox, QCheckBox, QRadioButton, QAbstractButton,
+                             QHBoxLayout)
 from PyQt5.QtGui import (QPainter, QPainterPath, QBrush, QColor, QFont, QFontMetrics, QRadialGradient, QPen, QPixmap, QFontDatabase, QLinearGradient)
 from PyQt5.QtWidgets import QStyledItemDelegate
 class BlobManager:

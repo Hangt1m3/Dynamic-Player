@@ -14,6 +14,193 @@ from PyQt5.QtGui import QFontDatabase
 from PyQt5.QtWidgets import QApplication
 from utils import extract_palette_from_image, get_contrast_ratio, get_best_text_color, get_best_border_color
 from config import GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN
+import sounddevice as sd
+import numpy as np
+import io
+import wave
+import asyncio
+import ctypes
+import os
+import tempfile
+import time
+import subprocess
+from ShazamAPI import Shazam
+from PyQt5.QtCore import QRunnable, pyqtSignal, QObject, pyqtSlot
+
+class ListenModeWorker(QRunnable):
+    class Signals(QObject):
+        track_changed = pyqtSignal(dict)
+        status = pyqtSignal(str)
+        error = pyqtSignal(str)
+
+    def __init__(self, mic_index=None):
+        super().__init__()
+        self.signals = self.Signals()
+        self.is_running = True
+        
+        # Memory variables for stabilizing physical media detection
+        self.current_track_id = None
+        self.pending_track_id = None
+        self.pending_match_count = 0
+
+    @pyqtSlot()
+    def run(self):
+        winmm = ctypes.windll.winmm
+        temp_dir = tempfile.gettempdir()
+        
+        # We now use two files: the raw recording, and the clean 16kHz version
+        wav_raw = os.path.join(temp_dir, "dynamic_player_raw.wav")
+        wav_ready = os.path.join(temp_dir, "dynamic_player_ready.wav")
+        
+        while self.is_running:
+            try:
+                self.signals.status.emit("Listening to mic...")
+                
+                # 1. Record raw audio natively
+                winmm.mciSendStringW("open new type waveaudio alias recsound", None, 0, None)
+                winmm.mciSendStringW("record recsound", None, 0, None)
+                
+                # Listen for 7 seconds (better accuracy for Shazam)
+                for _ in range(70):
+                    if not self.is_running:
+                        break
+                    time.sleep(0.1)
+                
+                # 2. Stop and Save raw file
+                winmm.mciSendStringW("stop recsound", None, 0, None)
+                if os.path.exists(wav_raw):
+                    try: os.remove(wav_raw)
+                    except: pass
+                    
+                winmm.mciSendStringW(f'save recsound "{wav_raw}"', None, 0, None)
+                winmm.mciSendStringW("close recsound", None, 0, None)
+                
+                if not self.is_running:
+                    break
+                    
+                self.signals.status.emit("Analyzing...")
+                
+                # 3. Use FFmpeg to perfectly format the audio (16kHz, Mono) so pydub doesn't crash
+                if os.path.exists(wav_raw):
+                    subprocess.run([
+                        'ffmpeg', '-y', 
+                        '-i', wav_raw, 
+                        '-ac', '1',          # Convert to Mono
+                        '-ar', '16000',      # Convert to 16000Hz
+                        wav_ready
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+                    
+                    # 4. Send the cleaned file to Shazam
+                    if os.path.exists(wav_ready):
+                        with open(wav_ready, 'rb') as f:
+                            audio_bytes = f.read()
+                            
+                        shazam = Shazam(audio_bytes)
+                        recognize_generator = shazam.recognizeSong()
+                        
+                        try:
+                            offset, out = next(recognize_generator)
+                        except StopIteration:
+                            out = {}
+                            
+                        if out and 'track' in out:
+                            track = out['track']
+                            title = track.get('title', 'Unknown Title')
+                            
+                            # 1. Filter out Shazam's known silence artifact
+                            if title.lower() == "andy session 1":
+                                self.signals.status.emit("Ignoring silence artifact...")
+                                continue
+                                
+                            # 2. Generate STRICT 22-character Base62-compliant IDs for Spotify's API
+                            import hashlib
+                            raw_key = str(track.get('key', '000000'))
+                            
+                            # hex returns 0-9 and a-f, which perfectly satisfies Base62 requirements
+                            track_id = hashlib.md5(raw_key.encode()).hexdigest()[:22]
+                            album_id = hashlib.md5((raw_key + "album").encode()).hexdigest()[:22]
+                            artist_id = hashlib.md5((raw_key + "artist").encode()).hexdigest()[:22]
+                            
+                            artist = track.get('subtitle', 'Unknown Artist')
+                            
+                            album_name = "Unknown Album"
+                            images = []
+                            
+                            if 'sections' in track:
+                                for sec in track['sections']:
+                                    if sec.get('type') == 'SONG':
+                                        for meta in sec.get('metadata', []):
+                                            if meta.get('title') == 'Album':
+                                                album_name = meta.get('text', album_name)
+                            
+                            if 'images' in track:
+                                img = track['images'].get('coverart') or track['images'].get('background')
+                                if img:
+                                    images.append({'url': img})
+                            
+                            result = {
+                                "id": track_id,
+                                "item": {
+                                    "name": title,
+                                    "artists": [{"name": artist, "id": artist_id}], # <-- Added artist_id
+                                    "album": {
+                                        "name": album_name,
+                                        "images": images,
+                                        "id": album_id # <-- Removed the "album_" prefix
+                                    },
+                                    "id": track_id,
+                                    "duration_ms": 180000
+                                },
+                                "is_playing": True,
+                                "progress_ms": 0,
+                                "source": "microphone"
+                            }
+                            
+                            # --- STABILITY LOGIC ---
+                            # 1. If this is the very first song detected after turning on Listen Mode
+                            if self.current_track_id is None:
+                                self.current_track_id = track_id
+                                self.signals.track_changed.emit(result)
+                                self.signals.status.emit(f"Locked onto initial track: {title}")
+                                
+                            # 2. If it matches what is currently playing, we are stable.
+                            elif track_id == self.current_track_id:
+                                self.pending_track_id = None
+                                self.pending_match_count = 0
+                                self.signals.status.emit(f"Still tracking: {title} (Stable)")
+                                
+                            # 3. It's a different track! But we need to verify it to prevent glitches.
+                            else:
+                                if track_id == self.pending_track_id:
+                                    # We saw this new track twice in a row! It's legit.
+                                    self.pending_match_count += 1
+                                    if self.pending_match_count >= 1:
+                                        self.current_track_id = track_id
+                                        self.signals.track_changed.emit(result)
+                                        self.signals.status.emit(f"Confirmed track change: {title}")
+                                        
+                                        # Reset pending memory
+                                        self.pending_track_id = None
+                                        self.pending_match_count = 0
+                                else:
+                                    # First time seeing this new track. Don't change UI yet.
+                                    self.pending_track_id = track_id
+                                    self.pending_match_count = 0
+                                    self.signals.status.emit(f"Possible track change detected: {title}... waiting to verify.")
+                            # ------------------------
+                            
+                        else:
+                            self.signals.status.emit("No match found (Keeping current track on screen)")
+                
+                # Pause before listening again
+                for _ in range(30):
+                    if not self.is_running: break
+                    time.sleep(0.1)
+                    
+            except Exception as e:
+                self.signals.error.emit(str(e))
+                winmm.mciSendStringW("close recsound", None, 0, None)
+                time.sleep(2)
 
 try:
     from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as MediaManager

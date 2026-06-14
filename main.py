@@ -1,5 +1,34 @@
 # main.py
 import sys
+
+class PhantomAudioOp:
+    """A pure-Python dummy module to prevent pydub from crashing on import in Python 3.14+"""
+    class error(Exception): pass
+    
+    @staticmethod
+    def rms(*args, **kwargs): return 1
+    @staticmethod
+    def max(*args, **kwargs): return 1
+    @staticmethod
+    def getsample(*args, **kwargs): return 0
+    @staticmethod
+    def tomono(fragment, *args, **kwargs): return fragment
+    @staticmethod
+    def tostereo(fragment, *args, **kwargs): return fragment
+    @staticmethod
+    def lin2lin(fragment, *args, **kwargs): return fragment
+    @staticmethod
+    def ratecv(fragment, *args, **kwargs): return fragment, None
+    @staticmethod
+    def mul(fragment, *args, **kwargs): return fragment
+    @staticmethod
+    def add(fragment1, *args, **kwargs): return fragment1
+    @staticmethod
+    def reverse(fragment, *args, **kwargs): return fragment
+
+sys.modules['audioop'] = PhantomAudioOp()
+sys.modules['pyaudioop'] = PhantomAudioOp()
+
 import os
 import json
 import io
@@ -38,7 +67,7 @@ from config import (
     LAVA_LAMP_PRESET,
 )
 from utils import resource_path
-from workers import SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, LyricsWorker, IS_WINDOWS
+from workers import ListenModeWorker, SpotifyPollingWorker, WindowsMediaWorker, TrackLoaderWorker, FontLoaderWorker, GoveeWorker, AppleMusicPollingWorker, LyricsWorker, IS_WINDOWS
 from ui.widgets import ResponsiveAlbumArtLabel, ScrollingTextLabel, SmoothProgressBar, BlobManager, BorderedLabel, LyricsLabel, PlayerControlsBar
 from ui.playlist_panel import PlaylistPanel
 from ui.renderers import BackgroundRendererController
@@ -310,6 +339,7 @@ class SpotifyPlayer(QMainWindow):
         self.overlay = OverlayWidget(self.container)
         self.overlay.hide()
         self.overlay.settings_button.clicked.connect(self.open_settings_dialog)
+        self.overlay.listen_mode_button.clicked.connect(self.toggle_listen_mode)
         self.overlay.lights_button.clicked.connect(self.toggle_lights)
         self.overlay.fullscreen_button.clicked.connect(self.toggle_fullscreen_mode)
         self.overlay.switch_monitor_button.clicked.connect(self.switch_monitor)
@@ -351,6 +381,44 @@ class SpotifyPlayer(QMainWindow):
             return screen
         screens = QApplication.screens()
         return screens[0] if screens else None
+
+    def toggle_listen_mode(self):
+        self.listen_mode_enabled = not getattr(self, 'listen_mode_enabled', False)
+        
+        if self.listen_mode_enabled:
+            # Stop existing media streams
+            self._stop_media_workers()
+            self.active_media_source = 'microphone'
+            
+            # Hide Lyrics
+            if self.lyrics_label:
+                self.lyrics_label.hide()
+            
+            # Start mic polling
+            settings = QSettings("SpotifySync", "App")
+            mic_index = settings.value("mic_input_index", type=int)
+            if mic_index == -1: mic_index = None # Use default
+            
+            self.listen_worker = ListenModeWorker(mic_index)
+            # Route it directly into Spotify's handler so caching and lights trigger!
+            self.listen_worker.signals.track_changed.connect(self._on_spotify_track_changed) 
+            self.listen_worker.signals.status.connect(lambda msg: print(f"[Listen Mode] {msg}"))
+            self.threadpool.start(self.listen_worker)
+            
+            self.title.setText("Starting Microphone...")
+            self.artist.setText("Listen Mode")
+            self.album_name.setText("Waiting for music...")
+        else:
+            if hasattr(self, 'listen_worker') and self.listen_worker:
+                self.listen_worker.is_running = False
+                self.listen_worker = None
+                
+            # Bring lyrics back
+            if self.lyrics_label:
+                self.lyrics_label.show()
+                
+            self.title.setText("Listen Mode Disabled")
+            self._configure_media_workers() # Restarts Spotify/Windows processes
 
     def _enter_borderless_fullscreen(self, preferred_screen=None):
         """Use monitor-sized frameless geometry instead of native fullscreen state."""
@@ -4261,31 +4329,21 @@ class SpotifyPlayer(QMainWindow):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
-            if not self._is_overlay_mode_allowed():
-                if self.overlay and not self.overlay.isHidden():
-                    self.overlay.fade_out()
-                    self._overlay_restore_pending = True
-                event.accept()
-                return
-            # Toggle overlay visibility with right-click
+            # Only show the overlay on right-click
             if self.overlay.isHidden():
-                # Show overlay
                 self.overlay.update_size()
-                # Position overlay at bottom-center of window in windowed mode,
-                # otherwise position it at the monitor bottom
                 if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
                     self._position_overlay_at_window_bottom()
                 else:
                     self._position_overlay_at_monitor_bottom()
                 self.overlay.fade_in()
-                event.accept()
             else:
-                # Hide overlay
                 self.overlay.fade_out()
-                event.accept()
+            event.accept()
+            return
+            
         elif event.button() == Qt.LeftButton:
             if self._is_custom_frameless_windowed_mode():
-                # Check if click is on a corner (for resizing)
                 corner = self._get_corner_at_position(event.pos())
                 if corner:
                     self.resize_corner = corner
@@ -4293,13 +4351,11 @@ class SpotifyPlayer(QMainWindow):
                     self.resize_start_pos = event.globalPos()
                     event.accept()
                 else:
-                    # Regular window drag from anywhere in the window
                     self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
                     event.accept()
             else:
                 super().mousePressEvent(event)
         else:
-            # Pass other clicks to the parent
             super().mousePressEvent(event)
     
     def _reposition_overlay_if_visible(self, force_show=False):

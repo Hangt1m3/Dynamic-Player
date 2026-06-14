@@ -39,6 +39,10 @@ class OverlayWidget(QWidget):
         self.settings_button = CircularButton(tooltip="Settings (C)", icon_char="⚙")
         self.settings_button.setFocusPolicy(Qt.NoFocus)
         
+        # --- NEW LISTEN MODE BUTTON ---
+        self.listen_mode_button = CircularButton(tooltip="Toggle Listen Mode (Mic)", icon_char="🎤")
+        self.listen_mode_button.setFocusPolicy(Qt.NoFocus)
+
         self.lights_button = CircularButton(tooltip="Toggle Lights (L)", icon_char="💡")
         self.lights_button.setFocusPolicy(Qt.NoFocus)
         
@@ -63,12 +67,14 @@ class OverlayWidget(QWidget):
         # FIX: Set FocusPolicy to NoFocus for all buttons.
         # This ensures clicking them doesn't steal focus from the main window,
         # allowing arrow keys and other binds to keep working.
-        buttons = [self.settings_button, self.lights_button, self.multi_monitor_button, 
+        buttons = [self.settings_button, self.listen_mode_button, self.lights_button, self.multi_monitor_button, 
                    self.wallpaper_button, self.background_only_button, self.notif_mode_button, self.fullscreen_button,
                    self.switch_monitor_button]
         for btn in buttons: btn.setFocusPolicy(Qt.NoFocus)
         
+        # Add it to the visual layout
         container_layout.addWidget(self.settings_button)
+        container_layout.addWidget(self.listen_mode_button) # <-- ADDED HERE
         container_layout.addWidget(self.lights_button)
         container_layout.addWidget(self.fullscreen_button)
         container_layout.addWidget(self.switch_monitor_button)

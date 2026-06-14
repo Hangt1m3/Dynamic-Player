@@ -1882,6 +1882,18 @@ class ColorEditorDialog(QDialog):
         credentials_tab_layout.addWidget(credentials_scroll)
         self.tab_widget.addTab(credentials_tab, "Connections")
 
+        # --- Microphone Connection ---
+        # --- Microphone Connection ---
+        mic_group = QGroupBox("Microphone (Listen Mode)")
+        mic_layout = QVBoxLayout(mic_group)
+        
+        self.mic_combo = NoScrollComboBox()
+        self.mic_combo.addItem("Default System Microphone", -1)
+        
+        mic_layout.addWidget(self._create_label("Note: Listen mode natively uses your default Windows microphone.\nChange your default device in Windows Sound Settings to switch inputs."))
+        mic_layout.addWidget(self.mic_combo)
+        credentials_layout.addWidget(mic_group)
+
         method_group = QGroupBox("Media Methods")
         method_layout = QVBoxLayout(method_group)
         method_layout.setContentsMargins(10, 10, 10, 10)

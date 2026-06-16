@@ -385,6 +385,10 @@ class SpotifyPlayer(QMainWindow):
     def toggle_listen_mode(self):
         self.listen_mode_enabled = not getattr(self, 'listen_mode_enabled', False)
         
+        # Save state for the next time the app opens
+        settings = QSettings("SpotifySync", "App")
+        settings.setValue("listen_mode_active", self.listen_mode_enabled)
+        
         if self.listen_mode_enabled:
             # Stop existing media streams
             self._stop_media_workers()
@@ -399,9 +403,12 @@ class SpotifyPlayer(QMainWindow):
             mic_index = settings.value("mic_input_index", type=int)
             if mic_index == -1: mic_index = None # Use default
             
-            self.listen_worker = ListenModeWorker(mic_index)
+            # --- UPDATE THIS LINE TO PASS THE SPOTIFY CLIENT ---
+            self.listen_worker = ListenModeWorker(mic_index, self.sp)
+            # ---------------------------------------------------
+            
             # Route it directly into Spotify's handler so caching and lights trigger!
-            self.listen_worker.signals.track_changed.connect(self._on_spotify_track_changed) 
+            self.listen_worker.signals.track_changed.connect(self._on_spotify_track_changed)
             self.listen_worker.signals.status.connect(lambda msg: print(f"[Listen Mode] {msg}"))
             self.threadpool.start(self.listen_worker)
             
@@ -2348,42 +2355,56 @@ class SpotifyPlayer(QMainWindow):
         self.progress_bar.setRange(0, self._current_track_duration)
         self.progress_bar.setTargetValue(self._last_progress_val, snap=True)
 
-        # --- Lyrics: reset state and fetch for new track ---
-        # Keep the label mounted/visible so layout height remains stable; reset()
-        # clears text + opacity while preserving the reserved lyrics slot.
-        self._current_lyrics = []
-        self._current_lyric_index = -1
         item = data["item"]
         track_id = item["id"]
-        if self.lyrics_label:
-            self.lyrics_label.reset()
-        if self.lyrics_cache.has(track_id):
-            cached = self.lyrics_cache.get(track_id)
-            if cached:
-                self._current_lyrics = cached
-                if self.lyrics_label:
-                    # Visible at opacity=0; frame_update will call setLine -> fade in.
-                    self.lyrics_label.show()
+
+        # --- LISTEN MODE LYRICS BYPASS ---
+        if getattr(self, 'listen_mode_enabled', False):
+            # If Listen Mode is ON, hide the label and clear state so it doesn't process
+            if hasattr(self, 'lyrics_label') and self.lyrics_label:
+                self.lyrics_label.hide()
+            self._current_lyrics = []
+            self._current_lyric_index = -1
+        else:
+            # If Listen Mode is OFF, run normal Spotify lyrics routine.
+            if hasattr(self, 'lyrics_label') and self.lyrics_label:
+                self.lyrics_label.show() # Ensure it's visible again
+            
+            # --- Lyrics: reset state and fetch for new track ---
+            self._current_lyrics = []
+            self._current_lyric_index = -1
+            
+            if self.lyrics_label:
+                self.lyrics_label.reset()
+                
+            if self.lyrics_cache.has(track_id):
+                cached = self.lyrics_cache.get(track_id)
+                if cached:
+                    self._current_lyrics = cached
+                    if self.lyrics_label:
+                        # Visible at opacity=0; frame_update will call setLine -> fade in.
+                        self.lyrics_label.show()
+                else:
+                    # Cached as False (no synced lyrics): keep reserved space, clear text.
+                    if self.lyrics_label:
+                        self.lyrics_label.reset()
+                        self.lyrics_label.show()
             else:
-                # Cached as False (no synced lyrics): keep reserved space, clear text.
+                # Not yet fetched: keep reserved space until worker responds.
                 if self.lyrics_label:
                     self.lyrics_label.reset()
                     self.lyrics_label.show()
-        else:
-            # Not yet fetched: keep reserved space until worker responds.
-            if self.lyrics_label:
-                self.lyrics_label.reset()
-                self.lyrics_label.show()
-            lyrics_worker = LyricsWorker(
-                track_id,
-                item.get("name", ""),
-                item.get("artists", [{}])[0].get("name", ""),
-                item.get("album", {}).get("name", ""),
-                item.get("duration_ms", 0),
-            )
-            lyrics_worker.signals.lyrics_ready.connect(self._on_lyrics_ready)
-            lyrics_worker.signals.no_lyrics.connect(self._on_no_lyrics)
-            self.threadpool.start(lyrics_worker)
+                lyrics_worker = LyricsWorker(
+                    track_id,
+                    item.get("name", ""),
+                    item.get("artists", [{}])[0].get("name", ""),
+                    item.get("album", {}).get("name", ""),
+                    item.get("duration_ms", 0),
+                )
+                lyrics_worker.signals.lyrics_ready.connect(self._on_lyrics_ready)
+                lyrics_worker.signals.no_lyrics.connect(self._on_no_lyrics)
+                self.threadpool.start(lyrics_worker)
+        # ---------------------------------
 
         # Aspect ratio is now set after the fade-out to prevent a jarring switch.
         self._load_track_data(data["item"], data["is_playing"], data["progress_ms"], aspect_ratio=1.0)

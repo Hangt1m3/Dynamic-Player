@@ -33,12 +33,12 @@ class ListenModeWorker(QRunnable):
         status = pyqtSignal(str)
         error = pyqtSignal(str)
 
-    def __init__(self, mic_index=None):
+    def __init__(self, mic_index=None, sp_client=None):
         super().__init__()
         self.signals = self.Signals()
         self.is_running = True
+        self.sp = sp_client
         
-        # Memory variables for stabilizing physical media detection
         self.current_track_id = None
         self.pending_track_id = None
         self.pending_match_count = 0
@@ -48,7 +48,6 @@ class ListenModeWorker(QRunnable):
         winmm = ctypes.windll.winmm
         temp_dir = tempfile.gettempdir()
         
-        # We now use two files: the raw recording, and the clean 16kHz version
         wav_raw = os.path.join(temp_dir, "dynamic_player_raw.wav")
         wav_ready = os.path.join(temp_dir, "dynamic_player_ready.wav")
         
@@ -56,15 +55,17 @@ class ListenModeWorker(QRunnable):
             try:
                 self.signals.status.emit("Listening to mic...")
                 
-                # 1. Record raw audio natively
                 winmm.mciSendStringW("open new type waveaudio alias recsound", None, 0, None)
                 winmm.mciSendStringW("record recsound", None, 0, None)
                 
-                # Listen for 7 seconds (better accuracy for Shazam)
-                for _ in range(70):
+                # --- FASTER CONFIRMATION TIMING ---
+                # Listen for 10 seconds normally, but shrink to 4 seconds if verifying a track change
+                listen_ticks = 40 if self.pending_track_id else 100
+                for _ in range(listen_ticks):
                     if not self.is_running:
                         break
                     time.sleep(0.1)
+                # ----------------------------------
                 
                 # 2. Stop and Save raw file
                 winmm.mciSendStringW("stop recsound", None, 0, None)
@@ -75,22 +76,22 @@ class ListenModeWorker(QRunnable):
                 winmm.mciSendStringW(f'save recsound "{wav_raw}"', None, 0, None)
                 winmm.mciSendStringW("close recsound", None, 0, None)
                 
-                if not self.is_running:
-                    break
+                if not self.is_running: break
                     
-                self.signals.status.emit("Analyzing...")
+                self.signals.status.emit("Analyzing with Shazam...")
                 
-                # 3. Use FFmpeg to perfectly format the audio (16kHz, Mono) so pydub doesn't crash
                 if os.path.exists(wav_raw):
+                    # ADVANCED AUDIO CLEANUP: Highpass filter removes desk thumps/rumble.
+                    # acompressor heavily boosts quiet music while limiting loud noises.
                     subprocess.run([
                         'ffmpeg', '-y', 
                         '-i', wav_raw, 
-                        '-ac', '1',          # Convert to Mono
-                        '-ar', '16000',      # Convert to 16000Hz
+                        '-ac', '1', 
+                        '-ar', '16000',
+                        '-filter:a', 'highpass=f=80, acompressor=threshold=-24dB:ratio=4:makeup=3', 
                         wav_ready
                     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
                     
-                    # 4. Send the cleaned file to Shazam
                     if os.path.exists(wav_ready):
                         with open(wav_ready, 'rb') as f:
                             audio_bytes = f.read()
@@ -105,94 +106,147 @@ class ListenModeWorker(QRunnable):
                             
                         if out and 'track' in out:
                             track = out['track']
-                            title = track.get('title', 'Unknown Title')
+                            raw_title = track.get('title', 'Unknown Title')
+                            raw_artist = track.get('subtitle', 'Unknown Artist')
                             
-                            # 1. Filter out Shazam's known silence artifact
-                            if title.lower() == "andy session 1":
+                            if raw_title.lower() == "andy session 1":
                                 self.signals.status.emit("Ignoring silence artifact...")
                                 continue
                                 
-                            # 2. Generate STRICT 22-character Base62-compliant IDs for Spotify's API
-                            import hashlib
-                            raw_key = str(track.get('key', '000000'))
+                            self.signals.status.emit(f"Shazam found: {raw_title}. Fetching Album...")
                             
-                            # hex returns 0-9 and a-f, which perfectly satisfies Base62 requirements
-                            track_id = hashlib.md5(raw_key.encode()).hexdigest()[:22]
-                            album_id = hashlib.md5((raw_key + "album").encode()).hexdigest()[:22]
-                            artist_id = hashlib.md5((raw_key + "artist").encode()).hexdigest()[:22]
-                            
-                            artist = track.get('subtitle', 'Unknown Artist')
-                            
-                            album_name = "Unknown Album"
-                            images = []
-                            
-                            if 'sections' in track:
-                                for sec in track['sections']:
-                                    if sec.get('type') == 'SONG':
-                                        for meta in sec.get('metadata', []):
-                                            if meta.get('title') == 'Album':
-                                                album_name = meta.get('text', album_name)
-                            
-                            if 'images' in track:
-                                img = track['images'].get('coverart') or track['images'].get('background')
-                                if img:
-                                    images.append({'url': img})
-                            
-                            result = {
-                                "id": track_id,
-                                "item": {
-                                    "name": title,
-                                    "artists": [{"name": artist, "id": artist_id}], # <-- Added artist_id
-                                    "album": {
-                                        "name": album_name,
-                                        "images": images,
-                                        "id": album_id # <-- Removed the "album_" prefix
-                                    },
+                            # --- SMART SPOTIFY FUZZY SEARCH (ALBUM PRIORITIZED) ---
+                            real_item = None
+                            if self.sp:
+                                try:
+                                    # Strip out "Remaster", "Live", "feat.", and brackets for cleaner fuzzing
+                                    clean_title = re.sub(r'\(.*?\)|\[.*?\]|-.*', '', raw_title).strip()
+                                    clean_artist = raw_artist.split('feat.')[0].split('&')[0].split(',')[0].strip()
+                                    
+                                    # Helper function to find the best album-type track from a list of results
+                                    def extract_best_album_track(search_results):
+                                        items = search_results.get('tracks', {}).get('items', [])
+                                        if not items:
+                                            return None
+                                        
+                                        # Group by type to enforce strict preference
+                                        album_tracks = []
+                                        single_tracks = []
+                                        
+                                        for t in items:
+                                            album_type = t.get('album', {}).get('album_type', '').lower()
+                                            if album_type == 'album':
+                                                album_tracks.append(t)
+                                            else:
+                                                single_tracks.append(t)
+                                                
+                                        # Return the top result from full albums if available, otherwise fallback to singles
+                                        if album_tracks:
+                                            return album_tracks[0]
+                                        return single_tracks[0]
+
+                                    # Attempt 1: Strict Exact Search (Pull 5 items to check for full albums)
+                                    search_res = self.sp.search(q=f"track:{raw_title} artist:{raw_artist}", type='track', limit=5)
+                                    real_item = extract_best_album_track(search_res)
+                                    
+                                    # Attempt 2: Cleaned Up Fuzzy Match (Pull 10 items to sort through)
+                                    if not real_item:
+                                        self.signals.status.emit(f"Strict search failed. Fuzzy searching albums for: {clean_title}")
+                                        search_res = self.sp.search(q=f"{clean_title} {clean_artist}", type='track', limit=10)
+                                        real_item = extract_best_album_track(search_res)
+                                        
+                                    # Attempt 3: Desperate Title-Only Match (Filtered by artist, then by album type)
+                                    if not real_item:
+                                        search_res = self.sp.search(q=clean_title, type='track', limit=10)
+                                        found_tracks = search_res.get('tracks', {}).get('items', [])
+                                        
+                                        # Filter strictly for matching artist first
+                                        artist_matched_tracks = [
+                                            t for t in found_tracks 
+                                            if clean_artist.lower() in [a['name'].lower() for a in t['artists']]
+                                        ]
+                                        
+                                        if artist_matched_tracks:
+                                            # Prioritize full albums within the artist's matched tracks
+                                            album_only = [t for t in artist_matched_tracks if t.get('album', {}).get('album_type', '').lower() == 'album']
+                                            real_item = album_only[0] if album_only else artist_matched_tracks[0]
+                                        elif found_tracks:
+                                            # Ultimate fallback to top raw result
+                                            real_item = found_tracks[0]
+                                            
+                                except Exception as e:
+                                    print(f"Listen Mode: Spotify search failed: {e}")
+                            # -----------------------------------------------------
+
+                            if real_item:
+                                track_id = real_item['id']
+                                result = {
                                     "id": track_id,
-                                    "duration_ms": 180000
-                                },
-                                "is_playing": True,
-                                "progress_ms": 0,
-                                "source": "microphone"
-                            }
+                                    "item": real_item,
+                                    "is_playing": True,
+                                    "progress_ms": 0,
+                                    "source": "microphone"
+                                }
+                            else:
+                                import hashlib
+                                raw_key = str(track.get('key', '000000'))
+                                track_id = hashlib.md5(raw_key.encode()).hexdigest()[:22]
+                                album_id = hashlib.md5((raw_key + "album").encode()).hexdigest()[:22]
+                                artist_id = hashlib.md5((raw_key + "artist").encode()).hexdigest()[:22]
+                                
+                                album_name = "Unknown Album"
+                                images = []
+                                if 'sections' in track:
+                                    for sec in track['sections']:
+                                        if sec.get('type') == 'SONG':
+                                            for meta in sec.get('metadata', []):
+                                                if meta.get('title') == 'Album':
+                                                    album_name = meta.get('text', album_name)
+                                if 'images' in track:
+                                    img = track['images'].get('coverart') or track['images'].get('background')
+                                    if img: images.append({'url': img})
+                                
+                                result = {
+                                    "id": track_id,
+                                    "item": {
+                                        "name": raw_title,
+                                        "artists": [{"name": raw_artist, "id": artist_id}],
+                                        "album": {"name": album_name, "images": images, "id": album_id},
+                                        "id": track_id,
+                                        "duration_ms": 180000
+                                    },
+                                    "is_playing": True,
+                                    "progress_ms": 0,
+                                    "source": "microphone"
+                                }
                             
-                            # --- STABILITY LOGIC ---
-                            # 1. If this is the very first song detected after turning on Listen Mode
                             if self.current_track_id is None:
                                 self.current_track_id = track_id
                                 self.signals.track_changed.emit(result)
-                                self.signals.status.emit(f"Locked onto initial track: {title}")
+                                self.signals.status.emit(f"Locked onto initial track: {raw_title}")
                                 
-                            # 2. If it matches what is currently playing, we are stable.
                             elif track_id == self.current_track_id:
                                 self.pending_track_id = None
                                 self.pending_match_count = 0
-                                self.signals.status.emit(f"Still tracking: {title} (Stable)")
+                                self.signals.status.emit(f"Still tracking: {raw_title} (Stable)")
                                 
-                            # 3. It's a different track! But we need to verify it to prevent glitches.
                             else:
                                 if track_id == self.pending_track_id:
-                                    # We saw this new track twice in a row! It's legit.
                                     self.pending_match_count += 1
                                     if self.pending_match_count >= 1:
                                         self.current_track_id = track_id
                                         self.signals.track_changed.emit(result)
-                                        self.signals.status.emit(f"Confirmed track change: {title}")
-                                        
-                                        # Reset pending memory
+                                        self.signals.status.emit(f"Confirmed track change: {raw_title}")
                                         self.pending_track_id = None
                                         self.pending_match_count = 0
                                 else:
-                                    # First time seeing this new track. Don't change UI yet.
                                     self.pending_track_id = track_id
                                     self.pending_match_count = 0
-                                    self.signals.status.emit(f"Possible track change detected: {title}... waiting to verify.")
-                            # ------------------------
+                                    self.signals.status.emit(f"Possible track change detected: {raw_title}... waiting to verify.")
                             
                         else:
                             self.signals.status.emit("No match found (Keeping current track on screen)")
                 
-                # Pause before listening again
                 for _ in range(30):
                     if not self.is_running: break
                     time.sleep(0.1)

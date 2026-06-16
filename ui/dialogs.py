@@ -818,6 +818,40 @@ class ColorEditorDialog(QDialog):
         # Convert initial Govee RGB lists to QColor for comparison
         self.initial_lights_palette = [QColor(*c) for c in initial_lights_palette]
 
+        # --- FIX: Bulletproof combobox text styling ---
+        self.setStyleSheet("""
+            QComboBox { 
+                background-color: #333; 
+                color: white; 
+                border: 1px solid #555; 
+                border-radius: 4px; 
+                padding: 4px; 
+            }
+            QComboBox:disabled { 
+                background-color: #222; 
+                color: #777; 
+                border-color: #333; 
+            }
+            QComboBox QAbstractItemView { 
+                background-color: #222; 
+                color: white; 
+                selection-background-color: #555; 
+                outline: none; 
+                border: 1px solid #444; 
+            }
+            /* Specifically target the QListView used by Font Dropdowns */
+            QListView { 
+                color: white; 
+                background-color: #222; 
+            }
+            QListView::item { 
+                color: white; 
+            }
+            QListView::item:selected { 
+                background-color: #555; 
+            }
+        """)
+        
         self.update_stylesheet()
 
         # --- 2. DEFERRED UI BUILD SETUP ---
@@ -844,6 +878,7 @@ class ColorEditorDialog(QDialog):
         self._settings_close_btn.setFixedSize(32, 32)
         self._settings_close_btn.setCursor(Qt.PointingHandCursor)
         self._settings_close_btn.clicked.connect(self.reject)
+        self._settings_close_btn.hide()
         tb_layout.addWidget(self._settings_title_label)
         tb_layout.addStretch()
         tb_layout.addWidget(self._settings_close_btn)

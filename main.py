@@ -605,31 +605,23 @@ class SpotifyPlayer(QMainWindow):
         return max(180, max_size)
 
     def _sync_art_and_lyrics_bounds(self, content_w, content_h, is_vertical, preferred_art_size):
-        horizontal_gap = 20
         if is_vertical:
-            text_reserve = 300
-            max_size = int(min(content_w - 40, content_h - text_reserve))
+            text_line_width = int(content_w * 0.9)
+            lyrics_width = int(content_w * 0.85)
+            art_size = int(min(content_w * 0.8, content_h * 0.45))
         else:
-            max_size = int(min(content_h - 40, (content_w - horizontal_gap) * 0.45))
-
-        art_size = max(180, min(int(preferred_art_size), max_size))
-
-        self._current_art_size_px = art_size
-
-        self.art.setFixedSize(art_size, art_size)
-        self.art_container.setFixedSize(art_size, art_size)
-
-        border_width = self.art.borderWidth() if hasattr(self.art, "borderWidth") else 4
-        art_inner_width = max(120, art_size - (2 * int(border_width)))
-
-        if is_vertical:
-            text_line_width = max(220, art_size)
-            lyrics_width = max(140, art_inner_width)
-        else:
-            details_lane_width = max(160, int(content_w - art_size - horizontal_gap))
-            text_line_width = max(180, details_lane_width - 40)
+            # WIDESCREEN BALANCE: Give art and text equal footing
+            art_size = int(min(content_h * 0.8, content_w * 0.4))
+            art_size = max(200, min(800, art_size))
+            
+            # Match the text lane width directly to the art size for perfect visual symmetry
+            details_lane_width = art_size
+            text_line_width = int(details_lane_width * 0.95)
             lyrics_width = text_line_width
 
+        self._current_art_size_px = art_size
+        self.art.setFixedSize(art_size, art_size)
+        self.art_container.setFixedSize(art_size, art_size)
         self._content_line_width_px = text_line_width
         self._lyrics_line_width_px = lyrics_width
 
@@ -3469,8 +3461,7 @@ class SpotifyPlayer(QMainWindow):
         effective_h = height
         extra_left = extra_top = extra_right = extra_bottom = 0
 
-        # Check if we should apply a multi-monitor layout. This is true if we are actively in multi-monitor mode,
-        # OR if we are in wallpaper mode that was initiated FROM multi-monitor mode.
+        # Check if we should apply a multi-monitor layout.
         is_multi_monitor_layout = self.multi_monitor_mode and self.target_monitor_geo and self.total_screens_geo
         is_wallpaper_from_multi = self.is_wallpaper_mode and self._was_multi_monitor and hasattr(self, '_saved_target_monitor_geo')
 
@@ -3520,18 +3511,8 @@ class SpotifyPlayer(QMainWindow):
         details_width = min(content_w, self._content_line_width_px + 40)
         self.details_widget.setFixedWidth(details_width)
 
-        details_hint_h = self.details_widget.sizeHint().height() if self.details_widget else 0
+        # Simplified vertical gap calculation (removed manual top_space math for perfect stretch centering)
         vertical_gap = max(24, min(64, int(content_h * 0.06)))
-        max_top_space = max(20, content_h - (self._current_art_size_px + vertical_gap + details_hint_h + 20))
-        remaining_after_stack = max(0, content_h - (self._current_art_size_px + vertical_gap + details_hint_h))
-        preferred_top_space = int(remaining_after_stack * 0.28)
-        center_line_limit = int((content_h * 0.5) - self._current_art_size_px - 8)
-        capped_top_space = min(max_top_space, center_line_limit)
-        if capped_top_space >= 20:
-            top_space = max(20, min(preferred_top_space, capped_top_space))
-        else:
-            top_space = max(20, min(max_top_space, preferred_top_space))
-        horizontal_art_outer_inset = max(18, min(72, int(content_w * 0.05)))
 
         if is_vertical:
             self.main_layout.setDirection(QBoxLayout.TopToBottom)
@@ -3554,37 +3535,46 @@ class SpotifyPlayer(QMainWindow):
             self.main_layout.takeAt(0)
 
         if is_vertical:
-            details_layout.insertWidget(1, self.album_name) # Re-insert album name
-            self.main_layout.addSpacing(top_space)
+            details_layout.insertWidget(1, self.album_name)
+            
+            self.main_layout.addStretch(1) 
             self.main_layout.addWidget(self.art_container, 0, Qt.AlignHCenter)
             self.main_layout.addWidget(self.details_widget, 0, Qt.AlignHCenter)
             self.main_layout.addStretch(1)
+            
             details_layout.setAlignment(self.progress_bar, Qt.AlignHCenter)
             if self.lyrics_label:
                 details_layout.setAlignment(self.lyrics_label, Qt.AlignHCenter)
             if self.player_controls_bar:
                 details_layout.setAlignment(self.player_controls_bar, Qt.AlignHCenter)
         else:
+            details_layout.removeWidget(self.album_name)
+            details_layout.insertWidget(0, self.album_name)
+            
+            # Calculate a fixed spacing gap to keep them clustered nicely together
+            gap_between_art_and_text = max(30, int(content_w * 0.05))
+            
             self.main_layout.addStretch(1)
             if self.player_art_side == "right":
-                self.main_layout.addWidget(self.details_widget, 1, Qt.AlignVCenter)
+                # Notice we removed the "4" and "5" stretch values, replacing them with "0" so they cluster
+                self.main_layout.addWidget(self.details_widget, 0, Qt.AlignVCenter)
+                self.main_layout.addSpacing(gap_between_art_and_text)
                 self.main_layout.addWidget(self.art_container, 0, Qt.AlignVCenter)
-                self.main_layout.addSpacing(horizontal_art_outer_inset)
             else:
-                self.main_layout.addSpacing(horizontal_art_outer_inset)
                 self.main_layout.addWidget(self.art_container, 0, Qt.AlignVCenter)
-                self.main_layout.addWidget(self.details_widget, 1, Qt.AlignVCenter)
-            details_layout.insertWidget(1, self.album_name) # Re-insert album name
-            details_layout.addWidget(self.progress_bar, 0, Qt.AlignHCenter)
-            if self.lyrics_label:
-                details_layout.setAlignment(self.lyrics_label, Qt.AlignHCenter)
-            if self.player_controls_bar:
-                details_layout.setAlignment(self.player_controls_bar, Qt.AlignHCenter)
+                self.main_layout.addSpacing(gap_between_art_and_text)
+                self.main_layout.addWidget(self.details_widget, 0, Qt.AlignVCenter)
             self.main_layout.addStretch(1)
+            
+            details_layout.addWidget(self.progress_bar, 0, Qt.AlignCenter)
+            if self.lyrics_label:
+                details_layout.setAlignment(self.lyrics_label, Qt.AlignCenter)
+            if self.player_controls_bar:
+                details_layout.setAlignment(self.player_controls_bar, Qt.AlignCenter)
 
         self.details_widget.setContentsMargins(20 if is_vertical else 40, 0, 20, 0)
         self.update() 
-        self._update_text_properties() 
+        self._update_text_properties()
 
     @pyqtSlot(dict)
     def _on_playback_state_changed(self, data):

@@ -40,6 +40,7 @@ class ListenModeWorker(QRunnable):
         self.sp = sp_client
         
         self.current_track_id = None
+        self.current_album_id = None  # <--- Added to track the current album
         self.pending_track_id = None
         self.pending_match_count = 0
 
@@ -180,6 +181,7 @@ class ListenModeWorker(QRunnable):
 
                             if real_item:
                                 track_id = real_item['id']
+                                album_id = real_item.get('album', {}).get('id') # <--- Explicitly extract album ID
                                 result = {
                                     "id": track_id,
                                     "item": real_item,
@@ -220,21 +222,36 @@ class ListenModeWorker(QRunnable):
                                     "source": "microphone"
                                 }
                             
+                            # --- STABILITY LOGIC ---
+                            # 1. First song detected after turning on Listen Mode
                             if self.current_track_id is None:
                                 self.current_track_id = track_id
+                                self.current_album_id = album_id # <--- Save the album ID
                                 self.signals.track_changed.emit(result)
                                 self.signals.status.emit(f"Locked onto initial track: {raw_title}")
                                 
+                            # 2. Stable matching
                             elif track_id == self.current_track_id:
                                 self.pending_track_id = None
                                 self.pending_match_count = 0
                                 self.signals.status.emit(f"Still tracking: {raw_title} (Stable)")
                                 
+                            # 3. SAME ALBUM BYPASS: Instant UI update, no verification delay
+                            elif self.current_album_id == album_id and album_id is not None:
+                                self.current_track_id = track_id
+                                self.current_album_id = album_id
+                                self.pending_track_id = None
+                                self.pending_match_count = 0
+                                self.signals.track_changed.emit(result)
+                                self.signals.status.emit(f"Same album detected! Instant track change: {raw_title}")
+                                
+                            # 4. Completely different album: verify to prevent glitches
                             else:
                                 if track_id == self.pending_track_id:
                                     self.pending_match_count += 1
                                     if self.pending_match_count >= 1:
                                         self.current_track_id = track_id
+                                        self.current_album_id = album_id # <--- Update to new album ID
                                         self.signals.track_changed.emit(result)
                                         self.signals.status.emit(f"Confirmed track change: {raw_title}")
                                         self.pending_track_id = None
@@ -243,6 +260,7 @@ class ListenModeWorker(QRunnable):
                                     self.pending_track_id = track_id
                                     self.pending_match_count = 0
                                     self.signals.status.emit(f"Possible track change detected: {raw_title}... waiting to verify.")
+                            # ------------------------
                             
                         else:
                             self.signals.status.emit("No match found (Keeping current track on screen)")

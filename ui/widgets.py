@@ -754,78 +754,65 @@ class NoScrollComboBox(QComboBox):
 
 
 class LyricsLabel(QLabel):
-    """Displays a single time-synced lyric line with a crossfade animation on change."""
-
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._text_color = QColor(255, 255, 255, 255)
+        super().__init__("", parent)
+        self._text_color = QColor(255, 255, 255, 0)
         self._border_enabled = False
         self._border_color = QColor("black")
         self._border_width = 3
         self._opacity = 0.0
-        self._full_text = ""
         self._pending_text = None
+        self._full_text = ""
         self._max_lines = 2
         self._gradient_enabled = False
-        self._gradient_color = QColor(255, 255, 255, 255)
-        self._gradient_direction = "0° East (Left -> Right)"
+        self._gradient_color = QColor(255, 255, 255)
+        self._gradient_direction = "Left to Right"
 
-        self.setAlignment(Qt.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setStyleSheet("background: transparent;")
-
-        self._anim = QPropertyAnimation(self, b"lyricsOpacity")
+        self._anim = QPropertyAnimation(self, b"opacity")
         self._anim.setEasingCurve(QEasingCurve.InOutQuad)
 
-    # --- opacity property ---
-    def _get_opacity(self): return self._opacity
-    def _set_opacity(self, val):
-        self._opacity = max(0.0, min(1.0, val))
+    def get_opacity(self): return self._opacity
+    def set_opacity(self, value):
+        self._opacity = value
         self.update()
-    lyricsOpacity = pyqtProperty(float, fget=_get_opacity, fset=_set_opacity)
+    opacity = pyqtProperty(float, fget=get_opacity, fset=set_opacity)
 
     def setTextColor(self, color):
         self._text_color = QColor(color)
         self.update()
 
-    def setMaxLines(self, lines):
-        self._max_lines = max(1, int(lines))
-        self.update()
-
-    def setBorder(self, enabled, color=None, width=None):
+    def setBorder(self, enabled, color, width=3):
         self._border_enabled = enabled
-        if color is not None:
-            self._border_color = QColor(color)
-        if width is not None:
-            self._border_width = width
+        self._border_color = QColor(color)
+        self._border_width = width
+        self.update()
+        
+    def setMaxLines(self, lines):
+        self._max_lines = lines
         self.update()
 
-    def setGradient(self, enabled=False, secondary_color=None, direction=None):
-        self._gradient_enabled = bool(enabled)
+    def setGradient(self, enabled, secondary_color=None, direction=None):
+        self._gradient_enabled = enabled
         if secondary_color is not None:
             self._gradient_color = QColor(secondary_color)
         if direction is not None:
             self._gradient_direction = direction
         self.update()
 
-    def _get_gradient_brush(self, text_bounds, text_color):
+    def _get_gradient_brush(self, text_bounds):
         if not self._gradient_enabled:
-            return QBrush(text_color)
+            return QBrush(self._text_color)
+        
         secondary = QColor(self._gradient_color)
-        secondary.setAlpha(text_color.alpha())
-        secondary = _ensure_distinct_gradient_end(text_color, secondary)
+        secondary.setAlpha(self._text_color.alpha())
+        secondary = _ensure_distinct_gradient_end(self._text_color, secondary)
         angle = _gradient_direction_to_angle(self._gradient_direction)
-        return QBrush(_build_linear_gradient(text_bounds, angle, text_color, secondary))
+        return QBrush(_build_linear_gradient(text_bounds, angle, self._text_color, secondary))
 
     def reset(self):
-        """Synchronously stop all animations and clear state.
-        Caller is responsible for calling show() or hide() afterwards.
-        """
         self._anim.stop()
-        try:
-            self._anim.finished.disconnect()
-        except TypeError:
-            pass
+        try: self._anim.finished.disconnect()
+        except TypeError: pass
         self._pending_text = None
         self._full_text = ""
         super().setText("")
@@ -833,187 +820,140 @@ class LyricsLabel(QLabel):
         self.update()
 
     def setLine(self, text):
-        """Set a new lyric line, crossfading if the text has changed."""
-        if text == self._full_text:
-            return
+        if text == self._full_text: return
         if self._opacity > 0.01 and self._full_text:
-            # Fade out current text, then swap and fade in
             self._pending_text = text
             self._anim.stop()
             self._anim.setDuration(180)
             self._anim.setStartValue(self._opacity)
             self._anim.setEndValue(0.0)
-            try:
-                self._anim.finished.disconnect()
-            except TypeError:
-                pass
+            try: self._anim.finished.disconnect()
+            except TypeError: pass
             self._anim.finished.connect(self._swap_and_fade_in)
             self._anim.start()
         else:
-            self._full_text = text
-            super().setText(text)
-            self._fade_in()
-
-    def _swap_and_fade_in(self):
-        try:
-            self._anim.finished.disconnect()
-        except TypeError:
-            pass
-        if self._pending_text is not None:
-            self._full_text = self._pending_text
-            super().setText(self._pending_text)
-            self._pending_text = None
-        self._fade_in()
-
-    def _fade_in(self):
-        self.show()  # Ensure visible (e.g. after hideLine collapsed the widget)
-        self._anim.stop()
-        self._anim.setDuration(250)
-        self._anim.setStartValue(self._opacity)
-        self._anim.setEndValue(1.0)
-        try:
-            self._anim.finished.disconnect()
-        except TypeError:
-            pass
-        self._anim.start()
-
-    def showLine(self):
-        """Make the widget visible and fade in the current text."""
-        self.show()
-        self._fade_in()
+            self._pending_text = text
+            self._swap_and_fade_in()
 
     def clearLine(self):
-        """Fade out the current line for a break in the song (widget stays visible in layout)."""
-        if self._opacity < 0.01:
-            self._full_text = ""
-            super().setText("")
-            return
-        self._anim.stop()
-        self._anim.setDuration(500)
-        self._anim.setStartValue(self._opacity)
-        self._anim.setEndValue(0.0)
-        try:
-            self._anim.finished.disconnect()
-        except TypeError:
-            pass
-        self._anim.finished.connect(self._on_cleared)
-        self._anim.start()
+        if self._opacity > 0.01 and self._full_text:
+            self._pending_text = ""
+            self._anim.stop()
+            self._anim.setDuration(180)
+            self._anim.setStartValue(self._opacity)
+            self._anim.setEndValue(0.0)
+            try: self._anim.finished.disconnect()
+            except TypeError: pass
+            self._anim.finished.connect(self._swap_and_fade_in)
+            self._anim.start()
 
-    def _on_cleared(self):
-        try:
-            self._anim.finished.disconnect()
-        except TypeError:
-            pass
-        self._full_text = ""
-        super().setText("")
+    def _swap_and_fade_in(self):
+        try: self._anim.finished.disconnect()
+        except TypeError: pass
+        if self._pending_text is not None:
+            self._full_text = self._pending_text
+            super().setText(self._full_text)
+            self._pending_text = None
+        if self._full_text:
+            self._anim.stop()
+            self._anim.setDuration(180)
+            self._anim.setStartValue(self._opacity)
+            self._anim.setEndValue(1.0)
+            self._anim.start()
+        else:
+            self._opacity = 0.0
+            self.update()
 
-    def hideLine(self):
-        """Fade out and hide (collapses layout space — used for no-lyrics / idle)."""
-        if not self.isVisible() or self._opacity < 0.01:
-            self.hide()
-            return
-        self._anim.stop()
-        self._anim.setDuration(200)
-        self._anim.setStartValue(self._opacity)
-        self._anim.setEndValue(0.0)
-        try:
-            self._anim.finished.disconnect()
-        except TypeError:
-            pass
-        self._anim.finished.connect(self.hide)
-        self._anim.start()
-
-    def _text_width(self, metrics, text):
-        if hasattr(metrics, "horizontalAdvance"):
-            return metrics.horizontalAdvance(text)
-        return metrics.width(text)
-
-    def _wrap_text_lines(self, metrics, text, max_width):
-        paragraphs = text.splitlines() or [text]
+    def _wrap_text_lines(self, metrics, max_width):
+        words = self._full_text.split()
+        if not words: return []
         lines = []
-
-        for paragraph in paragraphs:
-            words = paragraph.split()
-            if not words:
-                if paragraph.strip() == "":
-                    continue
-                words = [paragraph]
-
-            current = words[0]
-            if self._text_width(metrics, current) > max_width:
-                current = metrics.elidedText(current, Qt.ElideRight, max_width)
-
-            for word in words[1:]:
-                candidate = f"{current} {word}"
-                if self._text_width(metrics, candidate) <= max_width:
-                    current = candidate
-                else:
-                    lines.append(current)
-                    current = word
-                    if self._text_width(metrics, current) > max_width:
-                        current = metrics.elidedText(current, Qt.ElideRight, max_width)
-
-            lines.append(current)
-
-        if not lines:
-            return []
-
-        if len(lines) > self._max_lines:
-            head = lines[: self._max_lines - 1]
-            tail = " ".join(lines[self._max_lines - 1 :])
-            tail = metrics.elidedText(tail, Qt.ElideRight, max_width)
-            return head + [tail]
-
-        return lines
+        current_line = words[0]
+        for word in words[1:]:
+            candidate = f"{current_line} {word}"
+            if metrics.width(candidate) <= max_width:
+                current_line = candidate
+            else:
+                lines.append(current_line)
+                current_line = word
+                if len(lines) >= self._max_lines - 1:
+                    break
+        
+        if len(lines) < self._max_lines:
+            remaining_words = []
+            if current_line: remaining_words.append(current_line)
+            processed_count = len(" ".join(lines + ([current_line] if current_line else [])).split())
+            if processed_count < len(words):
+                remaining_words.extend(words[processed_count:])
+            last_line_text = " ".join(remaining_words).strip()
+            if last_line_text:
+                lines.append(metrics.elidedText(last_line_text, Qt.ElideRight, max_width))
+            
+        return lines[:self._max_lines]
 
     def paintEvent(self, event):
-        if not self._full_text or self._opacity < 0.01:
+        if not self._full_text or self._opacity <= 0.01:
             return
-        painter = QPainter()
-        if not painter.begin(self):
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        
+        rect = self.rect()
+        font = self.font()
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        
+        available_width = rect.width() - (self._border_width * 2 if self._border_enabled else 0)
+        lines = self._wrap_text_lines(metrics, available_width)
+        if not lines:
             return
-        try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            # Bake local fade opacity into color alphas so QGraphicsDropShadowEffect
-            # correctly picks up the transparency when rendering its shadow blur.
-            alpha_scale = self._opacity
-            text_color = QColor(self._text_color)
-            text_color.setAlphaF(text_color.alphaF() * alpha_scale)
-            border_color = QColor(self._border_color)
-            border_color.setAlphaF(border_color.alphaF() * alpha_scale)
-            metrics = QFontMetrics(self.font())
-            rect = self.rect()
-            max_width = max(24, rect.width() - 10)
-            lines = self._wrap_text_lines(metrics, self._full_text, max_width)
-            if not lines:
-                return
+            
+        line_height = metrics.lineSpacing()
+        total_text_height = len(lines) * line_height
+        y_start = rect.top() + (rect.height() - total_text_height) / 2 + metrics.ascent()
+        
+        # Calculate full bounds for gradient
+        text_bounds = QRectF(rect.left(), y_start - metrics.ascent(), rect.width(), total_text_height)
 
-            line_height = metrics.height()
-            line_gap = 2
-            total_height = (line_height * len(lines)) + (line_gap * max(0, len(lines) - 1))
-            y = (rect.height() - total_height) / 2 + metrics.ascent()
+        for i, line in enumerate(lines):
+            text_width = metrics.width(line)
+            x = rect.left() + (rect.width() - text_width) / 2
+            y = y_start + i * line_height
+            
+            path = QPainterPath()
+            path.addText(x, y, font, line)
 
-            for line in lines:
-                x = (rect.width() - self._text_width(metrics, line)) / 2
-                path = QPainterPath()
-                path.addText(x, y, self.font(), line)
-                path_rect = path.boundingRect()
-
-                if self._border_enabled:
-                    pen = QPen(border_color)
-                    pen.setWidth(self._border_width)
-                    pen.setJoinStyle(Qt.RoundJoin)
-                    painter.setPen(pen)
-                    painter.setBrush(Qt.NoBrush)
-                    painter.drawPath(path)
-
-                painter.setPen(Qt.NoPen)
-                gradient_bounds = QRectF(0.0, path_rect.top(), float(rect.width()), path_rect.height())
-                painter.setBrush(self._get_gradient_brush(gradient_bounds, text_color))
+            # Draw Outline
+            if self._border_enabled:
+                border_color = QColor(self._border_color)
+                border_color.setAlphaF(self._opacity)
+                pen = QPen(border_color)
+                pen.setWidth(self._border_width)
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
                 painter.drawPath(path)
-                y += line_height + line_gap
-        finally:
-            painter.end()
+
+            # Draw Fill (Gradient or Solid)
+            fill_color = QColor(self._text_color)
+            fill_color.setAlphaF(self._opacity)
+            
+            if self._gradient_enabled:
+                brush = self._get_gradient_brush(text_bounds)
+                # Ensure the brush opacity respects the global fade
+                gradient = brush.gradient()
+                for stop, color in gradient.stops():
+                    c = QColor(color)
+                    c.setAlphaF(self._opacity)
+                    gradient.setColorAt(stop, c)
+                brush = QBrush(gradient)
+            else:
+                brush = QBrush(fill_color)
+                
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(brush)
+            painter.drawPath(path)
 
 class CircularButton(QPushButton):
     def __init__(self, tooltip="", icon_char="", parent=None):

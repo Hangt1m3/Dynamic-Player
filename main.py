@@ -143,7 +143,9 @@ class SpotifyPlayer(QMainWindow):
         self._is_track_transitioning = False
         self._is_paused = False
         self.is_fullscreen = True
+        self._saved_geometry = None
         self.is_wallpaper_mode = False
+        self.was_wallpaper_mode = False
         self.threadpool = QThreadPool()
         self.font_styles_cache = {}
         self.base_font_families = []
@@ -221,6 +223,7 @@ class SpotifyPlayer(QMainWindow):
         self.RESIZE_CORNER_SIZE = 15  # Pixel size for corner detection
 
         self.multi_monitor_mode = False
+        self._was_multi_monitor = False
         self.target_monitor_geo = None
         self.total_screens_geo = None
         self.tray_icon = None
@@ -1215,7 +1218,8 @@ class SpotifyPlayer(QMainWindow):
         
         # --- NEW: Save Override ---
         settings.setValue("govee_brightness_override", "true" if self.govee_brightness_override else "false")
-        
+        geom = getattr(self, '_saved_geometry', None) or self.geometry()
+        settings.setValue("geometry", geom)
         settings.setValue("blob_density", self.blob_density)
         settings.setValue("start_in_wallpaper_mode", "true" if self.is_wallpaper_mode else "false")
         settings.setValue("background_only_mode", "true" if self.background_only_mode else "false")
@@ -3461,18 +3465,44 @@ class SpotifyPlayer(QMainWindow):
         effective_h = height
         extra_left = extra_top = extra_right = extra_bottom = 0
 
-        # Check if we should apply a multi-monitor layout.
+        from PyQt5.QtWidgets import QApplication
+        screens = QApplication.screens()
+
         is_multi_monitor_layout = self.multi_monitor_mode and self.target_monitor_geo and self.total_screens_geo
-        is_wallpaper_from_multi = self.is_wallpaper_mode and self._was_multi_monitor and hasattr(self, '_saved_target_monitor_geo')
 
-        if is_multi_monitor_layout or is_wallpaper_from_multi:
-            if is_multi_monitor_layout:
-                target_geo = self.target_monitor_geo
-                total_geo = self.total_screens_geo
-            else: # is_wallpaper_from_multi
-                target_geo = self._saved_target_monitor_geo
-                total_geo = self._saved_total_screens_geo
+        # --- NEW WALLPAPER MONITOR ISOLATION ---
+        if self.is_wallpaper_mode and screens:
+            # Ensure the index exists, default to 0
+            if not hasattr(self, 'wallpaper_monitor_index'):
+                self.wallpaper_monitor_index = 0
+            
+            # Keep index safely within bounds
+            self.wallpaper_monitor_index = self.wallpaper_monitor_index % len(screens)
+            
+            target_geo = screens[self.wallpaper_monitor_index].geometry()
+            
+            # Find the total bounding box of the massive wallpaper window
+            min_x = min([s.geometry().x() for s in screens])
+            min_y = min([s.geometry().y() for s in screens])
+            
+            # Calculate offsets to push the UI specifically into the target screen's area
+            rel_x = target_geo.x() - min_x
+            rel_y = target_geo.y() - min_y
+            target_w = target_geo.width()
+            target_h = target_geo.height()
+            
+            effective_w = target_w
+            effective_h = target_h
+            
+            # These "extra" margins physically shove the UI block out of the dead space
+            extra_left = rel_x
+            extra_top = rel_y
+            extra_right = width - (rel_x + target_w)
+            extra_bottom = height - (rel_y + target_h)
 
+        elif is_multi_monitor_layout:
+            target_geo = self.target_monitor_geo
+            total_geo = self.total_screens_geo
             rel_x = target_geo.x() - total_geo.x()
             rel_y = target_geo.y() - total_geo.y()
             target_w = target_geo.width()
@@ -4153,27 +4183,42 @@ class SpotifyPlayer(QMainWindow):
 
     def toggle_wallpaper_mode(self):
         self._remember_overlay_visibility()
+        
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import Qt, QTimer
+
         if self.is_wallpaper_mode:
+            # --- EXITING WALLPAPER MODE ---
             self.is_wallpaper_mode = False
             if self.tray_icon: self.tray_icon.hide()
-            self._detach_from_desktop_wallpaper_layer()
-            self.setWindowFlags(self._saved_flags)
-            if self._was_multi_monitor:
-                self.target_monitor_geo = self._saved_target_monitor_geo
-                self.total_screens_geo = self._saved_total_screens_geo
-            self.setGeometry(self._saved_geometry)
-            if self._was_multi_monitor:
+            
+            # Reapply correct window flags based on the restored mode
+            if getattr(self, '_was_multi_monitor', False):
                 self.multi_monitor_mode = True
                 self.is_fullscreen = True
+                self.target_monitor_geo = self._saved_target_monitor_geo
+                self.total_screens_geo = self._saved_total_screens_geo
+                self._apply_window_mode_flags()
+                self.setGeometry(self._saved_geometry)
                 self.show()
-            elif self._was_fullscreen:
+            elif getattr(self, '_was_fullscreen', False):
                 self.is_fullscreen = True
+                self._apply_window_mode_flags()
+                self.setGeometry(self._saved_geometry)
                 self._enter_borderless_fullscreen()
             else:
                 self.is_fullscreen = False
+                self._apply_window_mode_flags()
+                if hasattr(self, '_saved_geometry') and self._saved_geometry:
+                    self.setGeometry(self._saved_geometry)
                 self.showNormal()
+                self.show()
+                
+            self.update_layout()
+            
         else:
-            self._saved_flags = self.windowFlags()
+            # --- ENTERING WALLPAPER MODE ---
+            # 1. Save current state so we can restore it later
             self._saved_geometry = self.geometry()
             self._was_fullscreen = self.is_fullscreen
             self._was_multi_monitor = self.multi_monitor_mode
@@ -4181,34 +4226,42 @@ class SpotifyPlayer(QMainWindow):
                 self._saved_target_monitor_geo = self.target_monitor_geo
                 self._saved_total_screens_geo = self.total_screens_geo
 
+            # 2. Set Wallpaper Mode State
             self.is_wallpaper_mode = True
             self.multi_monitor_mode = False
             self.is_fullscreen = False
             
-            target_geo = self.geometry()
-            if not self._was_fullscreen and not self._was_multi_monitor:
-                screen = QApplication.screenAt(self.geometry().center())
-                if not screen:
-                    screens = QApplication.screens()
-                    if screens: screen = screens[0]
-                if screen: # Use availableGeometry() to avoid taskbar overlap
-                    target_geo = screen.availableGeometry()
+            # 3. Apply Wallpaper Window Flags
+            self._apply_window_mode_flags()
             
-            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint | Qt.Tool)
-            self.setGeometry(target_geo)
+            # 4. Stretch across all monitors
+            min_x = min([screen.geometry().x() for screen in QApplication.screens()])
+            min_y = min([screen.geometry().y() for screen in QApplication.screens()])
+            max_x = max([screen.geometry().x() + screen.geometry().width() for screen in QApplication.screens()])
+            max_y = max([screen.geometry().y() + screen.geometry().height() for screen in QApplication.screens()])
+            
+            self.setGeometry(min_x, min_y, max_x - min_x, max_y - min_y)
+            
+            # 5. Set active UI monitor to the Primary Screen
+            for i, s in enumerate(QApplication.screens()):
+                if s == QApplication.primaryScreen():
+                    self.wallpaper_monitor_index = i
+                    break
+            
+            self.showNormal()
             self.show()
-            if not self._attach_to_desktop_wallpaper_layer():
-                QTimer.singleShot(80, self._attach_to_desktop_wallpaper_layer)
+            
             if self.tray_icon: self.tray_icon.show()
-        
-        # Trigger playlist panel relayout after wallpaper mode toggle
+            
+            if hasattr(self, 'overlay') and not self.overlay.isHidden():
+                self.overlay.fade_out()
+                
+        # Update UI components
         if hasattr(self, 'playlist_panel') and self.playlist_panel:
             QTimer.singleShot(50, self.playlist_panel.relayout)
 
         self._sync_background_renderer_mode()
-
         self._update_native_titlebar_color()
-        
         QTimer.singleShot(0, self._restore_overlay_visibility)
 
     def _position_overlay_at_monitor_bottom(self):
@@ -4342,6 +4395,11 @@ class SpotifyPlayer(QMainWindow):
         if event.button() == Qt.RightButton:
             # Only show the overlay on right-click
             if self.overlay.isHidden():
+                # --- NEW: Force playlist panel to recount its grid for the active monitor ---
+                if hasattr(self, 'playlist_panel') and self.playlist_panel:
+                    self.playlist_panel.relayout()
+                # --------------------------------------------------------------------------
+                
                 self.overlay.update_size()
                 if not (self.is_fullscreen or self.multi_monitor_mode or self.is_wallpaper_mode):
                     self._position_overlay_at_window_bottom()
@@ -4580,15 +4638,32 @@ class SpotifyPlayer(QMainWindow):
         QTimer.singleShot(0, self._restore_overlay_visibility)
 
     def keyPressEvent(self, event):
+        from PyQt5.QtCore import Qt
+        
+        # 1. Handle Escape key
         if event.key() == Qt.Key_Escape:
             self.close()
             event.accept()
             return
+            
+        # 2. If in Wallpaper mode, intercept Left/Right arrow keys for monitor shifting
+        if getattr(self, 'is_wallpaper_mode', False):
+            if event.key() == Qt.Key_Left:
+                self._shift_wallpaper_monitor(-1)
+                event.accept()
+                return
+            elif event.key() == Qt.Key_Right:
+                self._shift_wallpaper_monitor(1)
+                event.accept()
+                return
 
+        # 3. RESTORED: Pass the key to the dynamic shortcut manager (Fixes F, C, F11, F12, L, etc.)
         action_id = self._shortcut_key_to_action.get(self._event_to_shortcut_text(event))
         if action_id and self._trigger_shortcut_action(action_id):
             event.accept()
             return
+            
+        # 4. Otherwise, pass the event along normally
         super().keyPressEvent(event)
 
     def showEvent(self, event):
@@ -4628,6 +4703,20 @@ class SpotifyPlayer(QMainWindow):
         if self.background_renderer:
             self.background_renderer.set_global_opacity(self._global_fade)
         self.update()
+
+    def _shift_wallpaper_monitor(self, direction):
+        from PyQt5.QtWidgets import QApplication
+        screens = QApplication.screens()
+        if not screens: return
+        
+        if not hasattr(self, 'wallpaper_monitor_index'):
+            self.wallpaper_monitor_index = 0
+            
+        # Shift the index up or down, and wrap around if it goes past the ends
+        self.wallpaper_monitor_index = (self.wallpaper_monitor_index + direction) % len(screens)
+        
+        # Recalculate margins and instantly snap the UI to the new monitor
+        self.update_layout()
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()

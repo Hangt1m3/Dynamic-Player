@@ -907,43 +907,39 @@ class PlaylistPanel(QWidget):
         return optimal_columns
     
     def _update_size(self):
-        """Update panel size based on number of playlists.
-        
-        Always shows add square. Panel becomes scrollable when content exceeds screen space.
-        Dynamically calculates columns based on screen width.
-        """
+        """Update panel size based on number of playlists."""
         num_playlists = len(self._playlists)
         
-        # Get screen geometry to determine available space
         from PyQt5.QtWidgets import QApplication
-        # Try to get the screen where the main window is currently displayed
-        screen = None
+        
+        screen_width = 1920
+        screen_height = 1080
+        
+        # --- TRUE SCREEN BOUNDS CALCULATION ---
         if self.main_window:
-            screen = QApplication.screenAt(self.main_window.geometry().center())
-        if not screen:
-            screen = QApplication.primaryScreen()
+            if getattr(self.main_window, 'is_wallpaper_mode', False):
+                screens = QApplication.screens()
+                idx = getattr(self.main_window, 'wallpaper_monitor_index', 0)
+                if idx < len(screens):
+                    target_geo = screens[idx].geometry()
+                    screen_width = target_geo.width()
+                    screen_height = target_geo.height()
+            else:
+                screen = QApplication.screenAt(self.main_window.geometry().center())
+                if not screen:
+                    screen = QApplication.primaryScreen()
+                if screen:
+                    screen_width = screen.geometry().width()
+                    screen_height = screen.geometry().height()
+        # --------------------------------------
         
-        if screen:
-            screen_height = screen.geometry().height()
-            screen_width = screen.geometry().width()
-            # Max height is 80% of screen for panel (scrollable if content exceeds)
-            max_panel_height = int(screen_height * 0.8)
-        else:
-            max_panel_height = 800  # Fallback
-            screen_width = 1920  # Fallback
+        max_panel_height = int(screen_height * 0.8)
         
-        # Calculate optimal columns based on screen width
-        # ALWAYS include the add button in calculations
         total_items_with_add = num_playlists + 1
         columns = self._calculate_optimal_columns(screen_width, total_items_with_add)
-        
-        # Store the calculated columns
         self._current_columns = columns
-        
-        # ALWAYS show add square (panel is scrollable now)
         self._show_add_square = True
         
-        # Calculate required height for all content (playlists + add button)
         total_items = total_items_with_add
         rows = (total_items + columns - 1) // columns if total_items > 0 else 1
         content_height = (rows * self.ITEM_HEIGHT) + max(0, rows - 1) * self.GRID_SPACING
@@ -952,21 +948,16 @@ class PlaylistPanel(QWidget):
         max_viewport_height = max(1, max_panel_height - vertical_padding)
         row_stride = self.ITEM_HEIGHT + self.GRID_SPACING
         max_visible_rows = max(1, (max_viewport_height + self.GRID_SPACING) // row_stride)
-        is_vertical_1080p = (
-            screen_width <= 1080 and screen_height >= 1920 and screen_height > screen_width
-        )
-        is_ultrawide_1440p = (
-            screen_height >= 1440 and screen_width >= 3000 and (screen_width / max(1, screen_height)) >= 2.3
-        )
-        if is_vertical_1080p:
-            max_visible_rows += 1
-        if is_ultrawide_1440p:
-            max_visible_rows += 1
+        
+        is_vertical_1080p = (screen_width <= 1080 and screen_height >= 1920 and screen_height > screen_width)
+        is_ultrawide_1440p = (screen_height >= 1440 and screen_width >= 3000 and (screen_width / max(1, screen_height)) >= 2.3)
+        if is_vertical_1080p: max_visible_rows += 1
+        if is_ultrawide_1440p: max_visible_rows += 1
+        
         visible_rows = min(rows, max_visible_rows)
         viewport_height = (visible_rows * self.ITEM_HEIGHT) + max(0, visible_rows - 1) * self.GRID_SPACING
         target_height = viewport_height + vertical_padding
         
-        # Calculate width based on columns
         if total_items > 0:
             content_width = (columns * self.ITEM_WIDTH) + ((columns - 1) * self.GRID_SPACING)
             self.playlist_container.setFixedWidth(content_width)
@@ -975,7 +966,6 @@ class PlaylistPanel(QWidget):
             self.playlist_container.setFixedWidth(self.PANEL_WIDTH)
             target_width = self.PANEL_WIDTH
         
-        # Set container/viewport heights for clean full-row clipping
         self.playlist_container.setMinimumHeight(content_height)
         self.playlist_container.setFixedHeight(content_height)
         self.scroll_area.setFixedHeight(viewport_height)
@@ -986,7 +976,6 @@ class PlaylistPanel(QWidget):
         self._position_scroll_hints()
         self._update_scroll_hints()
         
-        # Trigger overlay size update if parent is overlay
         if hasattr(self.parent(), 'update_size'):
             self.parent().update_size()
 

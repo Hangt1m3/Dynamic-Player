@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                              QSizePolicy, QScrollArea, QCheckBox, QGroupBox, QFormLayout, 
                              QComboBox, QSlider, QTableWidget, QTableWidgetItem, QAbstractItemView, 
                              QTextBrowser, QFrame, QColorDialog, QFileDialog, QTabWidget, 
-                             QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit, 
+                             QSizeGrip, QGraphicsDropShadowEffect, QRadioButton, QLineEdit,  
                              QGridLayout,
                              QApplication, QAbstractButton, QStyle, QStyleOptionSlider)
 from PyQt5.QtGui import (QPainter, QPainterPath, QPen, QColor, QFont, QFontDatabase, 
@@ -1468,6 +1468,8 @@ class ColorEditorDialog(QDialog):
     def _ui_build_steps(self):
         settings = QSettings("SpotifySync", "App")
         lights_config = self.cached_data.get("lights_config", {})
+        
+        from PyQt5.QtWidgets import QStyledItemDelegate
 
         # --- Right Column (Tabbed Settings) ---
         settings_container_layout = QVBoxLayout(self.settings_container)
@@ -1564,6 +1566,7 @@ class ColorEditorDialog(QDialog):
         notif_layout.addWidget(notification_group)
 
         self.notification_monitor_combo = NoScrollComboBox()
+        self.notification_monitor_combo.setItemDelegate(QStyledItemDelegate())
         screens = QApplication.screens()
         monitor_names = ["Primary Monitor"]
         for screen in screens:
@@ -1574,6 +1577,7 @@ class ColorEditorDialog(QDialog):
         self.notification_monitor_combo.setCurrentIndex(int(settings.value("notification_monitor_index", 0)))
 
         self.notification_corner_combo = NoScrollComboBox()
+        self.notification_corner_combo.setItemDelegate(QStyledItemDelegate())
         self.notification_corner_combo.addItems(["Top-Left", "Top-Center", "Top-Right", "Bottom-Left", "Bottom-Center", "Bottom-Right"])
         self.notification_corner_combo.setCurrentText(settings.value("notification_corner", "Top-Right"))
 
@@ -1615,10 +1619,12 @@ class ColorEditorDialog(QDialog):
         self.notif_border_checkbox.setChecked(settings.value("notification_border_enabled", "false") == "true")
 
         self.notification_anim_combo = NoScrollComboBox()
+        self.notification_anim_combo.setItemDelegate(QStyledItemDelegate())
         self.notification_anim_combo.addItems(["Fade", "Slide", "Fade Slide", "Bounce"])
         self.notification_anim_combo.setCurrentText(settings.value("notification_anim", "Fade"))
 
         self.notification_dir_combo = NoScrollComboBox()
+        self.notification_dir_combo.setItemDelegate(QStyledItemDelegate())
         self.notification_dir_combo.addItems(["From Top", "From Bottom", "From Left", "From Right"])
         self.notification_dir_combo.setCurrentText(settings.value("notification_dir", "From Top"))
         
@@ -1700,7 +1706,6 @@ class ColorEditorDialog(QDialog):
 
         # --- Apply Delegates for Global Settings ---
         self.default_font_family_combo.setItemDelegate(FontFamilyDelegate(self.default_font_family_combo))
-        # Pass a lambda function so the style delegate can always find the CURRENT text of the family combo
         self.default_font_style_combo.setItemDelegate(
             FontStyleDelegate(lambda: self.default_font_family_combo.currentText(), self.default_font_style_combo)
         )
@@ -1708,7 +1713,6 @@ class ColorEditorDialog(QDialog):
         self.default_font_size_slider = QSlider(Qt.Horizontal); self.default_font_size_slider.setRange(50, 200); self.default_font_size_slider.setValue(self.initial_default_font_size_scale)
         self.default_font_size_label = self._create_dynamic_label(f"{self.initial_default_font_size_scale}%")
         
-        # FIX: Connect to a method that updates preview instantly
         self.default_font_size_slider.valueChanged.connect(self._on_default_font_size_changed)
         
         default_size_layout = QHBoxLayout(); default_size_layout.addWidget(self.default_font_size_slider); default_size_layout.addWidget(self.default_font_size_label)
@@ -1808,6 +1812,7 @@ class ColorEditorDialog(QDialog):
         behavior_layout.addRow(self.minimize_mode_checkbox)
 
         self.player_art_side_combo = NoScrollComboBox()
+        self.player_art_side_combo.setItemDelegate(QStyledItemDelegate())
         self.player_art_side_combo.addItems(["Left", "Right"])
         saved_art_side = str(settings.value("player_art_side", "left")).strip().lower()
         self.player_art_side_combo.setCurrentText("Right" if saved_art_side == "right" else "Left")
@@ -1828,14 +1833,10 @@ class ColorEditorDialog(QDialog):
         def_bright_layout.addWidget(self.default_brightness_slider); def_bright_layout.addWidget(self.default_brightness_label)
         lights_defaults_layout.addRow(self._create_label("Default Brightness:"), def_bright_layout)
 
-        # --- NEW: Mobile App Brightness Override ---
         self.govee_override_checkbox = QCheckBox("Let Govee Mobile App Control Brightness")
         self.govee_override_checkbox.setToolTip("If enabled, the desktop app will ONLY control colors. Brightness is left to the Govee app.")
-        # Load value (defaulting to False)
-        settings = QSettings("SpotifySync", "App")
         is_override_on = settings.value("govee_brightness_override", "false") == "true"
         self.govee_override_checkbox.setChecked(is_override_on)
-        # Connect signal to update slider state immediately
         self.govee_override_checkbox.toggled.connect(lambda c: self.default_brightness_slider.setDisabled(c))
         self.default_brightness_slider.setDisabled(is_override_on)
         
@@ -1847,15 +1848,11 @@ class ColorEditorDialog(QDialog):
         sound_layout_form.setSpacing(12)
         global_layout.addWidget(sound_group)
 
-        # --- NEW: Sound Volume Slider ---
         self.sound_volume_slider = QSlider(Qt.Horizontal)
         self.sound_volume_slider.setRange(0, 100)
-        # Get current volume from parent SoundManager
         current_vol = int(self.parent().sound_manager.base_volume * 100)
         self.sound_volume_slider.setValue(current_vol)
         self.sound_volume_label = self._create_dynamic_label(f"{current_vol}%")
-        
-        # Connect to live update handler
         self.sound_volume_slider.valueChanged.connect(self._on_sound_volume_changed)
         
         sound_layout = QHBoxLayout()
@@ -1893,7 +1890,6 @@ class ColorEditorDialog(QDialog):
         data_layout.addWidget(self.reset_app_btn)
         
         global_layout.addWidget(data_group)
-        
         global_layout.addStretch()
 
         yield # Yield after Tab 3 setup
@@ -1918,11 +1914,11 @@ class ColorEditorDialog(QDialog):
         self.tab_widget.addTab(credentials_tab, "Connections")
 
         # --- Microphone Connection ---
-        # --- Microphone Connection ---
         mic_group = QGroupBox("Microphone (Listen Mode)")
         mic_layout = QVBoxLayout(mic_group)
         
         self.mic_combo = NoScrollComboBox()
+        self.mic_combo.setItemDelegate(QStyledItemDelegate())
         self.mic_combo.addItem("Default System Microphone", -1)
         
         mic_layout.addWidget(self._create_label("Note: Listen mode natively uses your default Windows microphone.\nChange your default device in Windows Sound Settings to switch inputs."))
@@ -2067,12 +2063,11 @@ class ColorEditorDialog(QDialog):
         controls_content.setObjectName("scrollAreaContent")
         controls_scroll.setWidget(controls_content)
 
-        # FIX: Use QGridLayout for better alignment
         from PyQt5.QtWidgets import QGridLayout
         controls_layout = QGridLayout(controls_content)
         controls_layout.setContentsMargins(15, 15, 15, 15)
         controls_layout.setSpacing(15)
-        controls_layout.setColumnStretch(1, 1) # Allow description to stretch
+        controls_layout.setColumnStretch(1, 1) 
         
         controls_tab_layout.addWidget(controls_scroll)
         self.tab_widget.addTab(controls_tab, "Keyboard Shortcuts")
@@ -2153,6 +2148,7 @@ class ColorEditorDialog(QDialog):
             is_text=True
         )
         self.title_gradient_dir_combo = NoScrollComboBox()
+        self.title_gradient_dir_combo.setItemDelegate(QStyledItemDelegate())
         self.title_gradient_dir_combo.addItems(self.GRADIENT_DIRECTION_OPTIONS)
         self.title_gradient_dir_combo.setCurrentText(self._normalize_gradient_direction_label(self.title_gradient_direction))
         self.title_grad_pick_btn.setEnabled(self.title_gradient_checkbox.isChecked())
@@ -2174,15 +2170,11 @@ class ColorEditorDialog(QDialog):
         self.font_family_combo = NoScrollComboBox()
         self.font_family_combo.setToolTip("Select the font family for the track title and artist.")
         self.font_family_combo.setEnabled(self.is_font_family_overridden)
-        
-        # --- Apply Delegate to Theme Font Family ---
         self.font_family_combo.setItemDelegate(FontFamilyDelegate(self.font_family_combo))
         
         self.font_style_combo = NoScrollComboBox()
         self.font_style_combo.setToolTip("Select the style for the chosen font family.")
         self.font_style_combo.setEnabled(self.is_font_family_overridden)
-        
-        # --- Apply Delegate to Theme Font Style ---
         self.font_style_combo.setItemDelegate(FontStyleDelegate(lambda: self.font_family_combo.currentText(), self.font_style_combo))
 
         self.font_search_input = QLineEdit()
@@ -2204,7 +2196,6 @@ class ColorEditorDialog(QDialog):
         self.title_case_radios, title_case_widget = self._create_case_controls(self.initial_title_case)
         self.artist_case_radios, artist_case_widget = self._create_case_controls(self.initial_artist_case)
 
-        # Add Separator for Border Settings
         border_line = QFrame()
         border_line.setFrameShape(QFrame.HLine)
         border_line.setFrameShadow(QFrame.Sunken)
@@ -2372,7 +2363,6 @@ class ColorEditorDialog(QDialog):
         govee_group_main_layout.setContentsMargins(10, 10, 10, 10)
         govee_group_main_layout.setSpacing(12)
         
-        # Status row using a QHBoxLayout for horizontal alignment
         status_widget = QWidget()
         status_layout = QHBoxLayout(status_widget)
         status_layout.setContentsMargins(0,0,0,0)
@@ -2380,7 +2370,7 @@ class ColorEditorDialog(QDialog):
         lights_status = "Enabled" if self.parent().lights_enabled else "Disabled"
         status_layout.addWidget(self._create_dynamic_label("Global Lights:"))
         status_value_label = self._create_dynamic_label(lights_status)
-        status_value_label.setStyleSheet("font-weight: normal;") # Counteract bold from GroupBox
+        status_value_label.setStyleSheet("font-weight: normal;") 
         status_layout.addWidget(status_value_label)
         status_layout.addStretch()
         reset_lights_btn = QPushButton("Reset")
@@ -2389,7 +2379,6 @@ class ColorEditorDialog(QDialog):
         status_layout.addWidget(reset_lights_btn)
         govee_group_main_layout.addWidget(status_widget)
 
-        # Brightness Slider
         brightness_widget = QWidget()
         brightness_layout = QHBoxLayout(brightness_widget)
         brightness_layout.setContentsMargins(0,0,0,0)
@@ -2407,7 +2396,6 @@ class ColorEditorDialog(QDialog):
         brightness_layout.addWidget(self.override_brightness_checkbox); brightness_layout.addWidget(self._create_dynamic_label("Brightness:")); brightness_layout.addWidget(self.govee_brightness_slider); brightness_layout.addWidget(self.govee_brightness_label)
         govee_group_main_layout.addWidget(brightness_widget)
 
-        # Form layout for the color pickers that need wrapping
         govee_picker_layout = QFormLayout()
         govee_picker_layout.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
         govee_picker_layout.setRowWrapPolicy(QFormLayout.WrapAllRows)
@@ -2440,7 +2428,6 @@ class ColorEditorDialog(QDialog):
 
         yield # Yield after Govee Group
 
-        # Add SizeGrip for manual resizing
         self.sizegrip = QSizeGrip(self)
 
         # --- Action Buttons ---
@@ -2453,7 +2440,6 @@ class ColorEditorDialog(QDialog):
         self.quick_save_btn.setToolTip("Save changed settings immediately.")
         self.quick_save_btn.clicked.connect(lambda: self.save_and_close(quick=True))
         
-        # --- NEW BUTTON: Save Full Theme ---
         self.save_full_theme_btn = QPushButton("Save Theme")
         self.save_full_theme_btn.setToolTip("Save the current look as a fixed theme (snapshots all colors and settings).")
         self.save_full_theme_btn.clicked.connect(self.save_full_theme)
@@ -2469,7 +2455,7 @@ class ColorEditorDialog(QDialog):
         
         self.cancel_button = QPushButton("Cancel")
         self.action_layout.addWidget(self.quick_save_btn)
-        self.action_layout.addWidget(self.save_full_theme_btn) # Added here
+        self.action_layout.addWidget(self.save_full_theme_btn)
         self.action_layout.addWidget(self.save_button)
         self.action_layout.addWidget(self.done_button)
         self.action_layout.addWidget(self.cancel_button)
@@ -2503,27 +2489,40 @@ class ColorEditorDialog(QDialog):
         self._is_ui_built = True
         self._refresh_save_buttons_for_current_tab()
         
-        # Install event filter on all created widgets
         self._install_filter_recursive(self)
         self.tab_widget.installEventFilter(self.ui_event_filter)
 
         # --- 4. POPULATE DATA & SET INITIAL STATES ---
         self.shadow_checkbox.setChecked(self.initial_shadow_enabled)
 
-        # Check if fonts have been pre-loaded by the main window or updated while building
-        if self.base_font_families:
-             self._on_fonts_loaded({ "font_styles_cache": self.font_styles_cache, "base_font_families": self.base_font_families })
-        elif self.parent()._fonts_loaded:
-            self.font_styles_cache = self.parent().font_styles_cache
-            self.base_font_families = self.parent().base_font_families
-            self._on_fonts_loaded({ "font_styles_cache": self.font_styles_cache, "base_font_families": self.base_font_families })
-        else:
-            # Fonts are still loading in the background, show a placeholder
-            self._font_list_populated = False
-            self.font_family_combo.addItem("Loading fonts...")
-            self.default_font_family_combo.addItem("Loading fonts...")
-            for w in [self.font_family_combo, self.font_style_combo, self.font_search_input, self.default_font_family_combo, self.default_font_style_combo]:
-                w.setEnabled(False)
+        # FOOLPROOF FONT LOADING: If background thread failed or hasn't finished, load synchronously NOW.
+        if not self.parent()._fonts_loaded or not self.parent().base_font_families:
+            from PyQt5.QtGui import QFontDatabase
+            db = QFontDatabase()
+            self.parent().base_font_families = db.families()
+            self.parent().font_styles_cache = {fam: db.styles(fam) for fam in self.parent().base_font_families}
+            self.parent()._fonts_loaded = True
+
+        self.font_styles_cache = self.parent().font_styles_cache
+        self.base_font_families = self.parent().base_font_families
+
+        # Safely populate the combo boxes without triggering early update signals
+        self.font_family_combo.blockSignals(True)
+        self.default_font_family_combo.blockSignals(True)
+
+        self.font_family_combo.clear()
+        self.default_font_family_combo.clear()
+        self.font_family_combo.addItems(self.base_font_families)
+        self.default_font_family_combo.addItems(self.base_font_families)
+
+        self.font_family_combo.blockSignals(False)
+        self.default_font_family_combo.blockSignals(False)
+
+        # Forceably unlock the widgets so they are immediately clickable
+        for w in [self.font_family_combo, self.font_style_combo, self.font_search_input, self.default_font_family_combo, self.default_font_style_combo]:
+            w.setEnabled(True)
+
+        self._font_list_populated = True
 
         # --- 5. Set initial states from loaded data ---
         self.fetch_updates()
